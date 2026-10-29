@@ -3,3 +3,5 @@ _w.py
 *.tgz
 node_modules
 .git
+data
+.env

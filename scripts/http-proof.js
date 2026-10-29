@@ -1,5 +1,6 @@
 const http=require("http");
-const fs=require("fs"); const path=require("path"); const seed=require("../roster"); fs.writeFileSync(path.join(__dirname,"../data/store.json"), JSON.stringify({roster:seed.map((o,i)=>Object.assign({},o,{order:i})),shifts:[],interests:[],nextShiftId:1},null,2)); const db=require("../db");
+const fs=require("fs"); const path=require("path"); const seed=require("../roster");
+const dataDir=path.join(__dirname,"../data"); fs.mkdirSync(dataDir,{recursive:true}); fs.writeFileSync(path.join(dataDir,"store.json"), JSON.stringify({roster:seed.map((o,i)=>Object.assign({},o,{order:i})),shifts:[],interests:[],nextShiftId:1},null,2)); const db=require("../db");
 const PORT=3848;
 const srv=http.createServer(async (req,res)=>{
   const u=new URL(req.url,"http://x");

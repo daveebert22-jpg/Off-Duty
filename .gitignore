@@ -3,3 +3,4 @@ _chunk*
 _w.py
 *.tgz
 .env
+data/

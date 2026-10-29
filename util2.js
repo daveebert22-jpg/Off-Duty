@@ -21,4 +21,21 @@ function isAuthed(req){ prune(); const id=parseCookies(req)[COOKIE]; if(!id) ret
 function cookieHeader(id){ const maxAge=Math.floor(TTL/1000); const secure=(process.env.OD_SECURE==="1"||process.env.NODE_ENV==="production")?"; Secure":""; return COOKIE+"="+encodeURIComponent(id)+"; Path=/; HttpOnly; SameSite=Lax; Max-Age="+maxAge+secure; }
 function clearCookieHeader(){ return COOKIE+"=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"; }
 function getToken(req){ return parseCookies(req)[COOKIE]||null; }
-module.exports={COOKIE,CFG_PATH,hasKey,setKey,checkKey,isAuthed,mint,drop,getToken,cookieHeader,clearCookieHeader};
+
+// US 10-digit → +1. Existing +E.164 (8–15 digits) is kept. Anything else is unusable.
+function normalizePhone(raw) {
+  if (raw == null) return "";
+  const s = String(raw).trim();
+  if (!s) return "";
+  const digits = s.replace(/\D/g, "");
+  if (!digits || digits[0] === "0") return "";
+  if (s.startsWith("+")) {
+    if (digits.length >= 8 && digits.length <= 15) return "+" + digits;
+    return "";
+  }
+  if (digits.length === 10) return "+1" + digits;
+  if (digits.length === 11 && digits.startsWith("1")) return "+" + digits;
+  return "";
+}
+
+module.exports={COOKIE,CFG_PATH,hasKey,setKey,checkKey,isAuthed,mint,drop,getToken,cookieHeader,clearCookieHeader,normalizePhone};

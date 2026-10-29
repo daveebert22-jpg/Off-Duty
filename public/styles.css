@@ -42,3 +42,13 @@ a{color:#93c5fd}
 .award-row:last-child{border-bottom:0}
 .award-actions{flex:0 0 auto}
 .inline-form{display:inline}
+.roster-item{margin:0 0 12px;padding:0 0 12px;border-bottom:1px solid #243552}
+.roster-item:last-child{border-bottom:0;margin-bottom:0;padding-bottom:0}
+.phone-form{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;align-items:center}
+.phone-form input{flex:1 1 160px;min-width:0;padding:10px 12px}
+.phone-form .btn{flex:0 0 auto}
+.withdraw{margin-top:16px;padding-top:14px;border-top:1px solid #243552}
+.withdraw h2{font-size:1.15rem}
+.sms-ok{background:#14532d;color:#bbf7d0;padding:10px 12px;border-radius:10px}
+.sms-note{display:grid;gap:8px;margin:10px 0}
+.btn.danger.big{width:100%}

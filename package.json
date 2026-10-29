@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node scripts/http-proof.js && node scripts/verify.js && node scripts/cancel-proof.js"
+    "test": "node scripts/http-proof.js && node scripts/verify.js && node scripts/cancel-proof.js && node scripts/withdraw-sms-proof.js"
   },
   "engines": {
     "node": ">=18"

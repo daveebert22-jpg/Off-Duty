@@ -1,4 +1,5 @@
 const db=require("../db");
+db.resetToSeed();
 const s=db.createShift({title:"t",windowMinutes:20});
 db.addInterest(s.id,"84");
 db.addInterest(s.id,"80");
