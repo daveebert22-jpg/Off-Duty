@@ -1,0 +1,12 @@
+const db=require("../db");
+const s=db.createShift({title:"t",windowMinutes:20});
+db.addInterest(s.id,"84");
+db.addInterest(s.id,"80");
+db.addInterest(s.id,"54");
+const c=db.closeShift(s.id);
+const a=db.confirmAward(s.id);
+const bottom=db.getRoster().slice(-1)[0];
+const top=db.getRoster()[0];
+const ok=c.suggestion&&c.suggestion.badge==="54"&&a.winner.badge==="54"&&bottom.badge==="54";
+console.log(JSON.stringify({suggest:c.suggestion,winner:a.winner,bottom,top,ok}));
+process.exit(ok?0:1);
