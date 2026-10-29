@@ -183,6 +183,92 @@ const holderBlocked = allocateDays({
 });
 results.holderBlocked = eq(holderBlocked.map((p) => [p.day, p.badge]), [[7, "B"]]);
 
+// Dave's second sheet: 5 days, 2 officers per day. List order is the order below.
+const twoRoster = [
+  ["59", "Tallarico"],
+  ["102", "Orosz"],
+  ["48", "Park"],
+  ["99", "Lilley"],
+  ["71", "Martone"],
+  ["90", "Fields"],
+  ["80", "Reyes"],
+  ["63", "Whalen"],
+  ["94", "Lorenzo"],
+  ["87", "Costanza"],
+  ["101", "Nase"],
+  ["97", "Lopez"],
+].map(([badge, name]) => ({ badge, name }));
+const twoPrefs = [
+  ["59", [3, 4]],
+  ["102", [4]],
+  ["48", [4, 5]],
+  ["99", [3, 4]],
+  ["71", [3, 4]],
+  ["90", [1, 2, 3, 4]],
+  ["80", [1, 5]],
+  ["63", [1]],
+  ["94", [2, 5]],
+  ["87", [1]],
+  ["101", [5]],
+  ["97", [3, 4]],
+].map(([badge, ranks]) => ({ badge, ranks }));
+function byDay(rows) {
+  const out = {};
+  rows.forEach((p) => {
+    if (!out[p.day]) out[p.day] = [];
+    out[p.day].push(p.badge);
+  });
+  return out;
+}
+const twoRound1 = allocateDays({
+  roster: twoRoster,
+  interests: twoPrefs,
+  days: [1, 2, 3, 4, 5],
+  assigned: {},
+  mode: "one",
+  slotsPerDay: 2,
+});
+const twoMap = byDay(twoRound1);
+results.twoPerRound1 = eq(twoMap, {
+  1: ["90", "80"],
+  2: ["94"],
+  3: ["59", "99"],
+  4: ["102", "48"],
+  5: ["101"],
+});
+results.twoPerRound1Misses = ["71", "63", "87", "97"].every((b) => !twoRound1.some((p) => p.badge === b));
+const twoAssigned = {};
+Object.keys(twoMap).forEach((day) => {
+  twoAssigned[day] = twoMap[day].map((badge) => ({ badge }));
+});
+const twoRound3 = allocateDays({
+  roster: twoRoster,
+  interests: twoPrefs,
+  days: [1, 2, 3, 4, 5],
+  assigned: twoAssigned,
+  mode: "extra",
+  slotsPerDay: 2,
+});
+results.twoPerRound3 = eq(twoRound3.map((p) => [p.day, p.badge]), [[5, "48"], [2, "90"]]);
+const noDouble = allocateDays({
+  roster: [{ badge: "A", name: "A" }],
+  interests: [{ badge: "A", ranks: [1] }],
+  days: [1],
+  assigned: {},
+  mode: "extra",
+  slotsPerDay: 2,
+});
+results.noTwoSlotsSameDay = eq(noDouble.map((p) => p.day), [1]);
+const round2FillsOpen = allocateDays({
+  roster: twoRoster.concat([{ badge: "65", name: "Duncan" }]),
+  interests: twoPrefs.concat([{ badge: "65", ranks: [2] }]),
+  days: [1, 2, 3, 4, 5],
+  assigned: twoAssigned,
+  mode: "one",
+  slotsPerDay: 2,
+});
+results.round2NotHolder = eq(round2FillsOpen.map((p) => [p.day, p.badge]), [[2, "65"]]);
+
 results.singleAwardText = sms.messageAwarded({
   title: "Municipal detail", whenText: "Fri 6p", winnerName: "Pierson", winnerBadge: "54",
 }) === "TFPD Off Duty: Municipal detail — Fri 6p filled by Pierson (badge #54).";
@@ -387,6 +473,93 @@ results.multiAwardText = sms.messageAwarded({
     sms.messageAwarded(paper2.shift).indexOf("Costanza #87") >= 0 &&
     sms.messageAwarded(paper2.shift).indexOf("unfilled") < 0;
 
+  db.resetToSeed();
+  setRosterOrder(["59", "102", "48", "99", "71", "90", "80", "63", "94", "87", "101", "97"]);
+  const two = db.createShift({
+    title: "Two per day",
+    multiDay: true,
+    dayCount: 5,
+    slotsPerDay: 2,
+    windowMinutes: 20,
+  });
+  results.slotsDefaultCap = db.createShift({ title: "Cap", multiDay: true, dayCount: 2, slotsPerDay: 99, windowMinutes: 20 }).slotsPerDay === 10;
+  results.slotsStored = two.slotsPerDay === 2 && !Array.isArray(two.assignments);
+  twoPrefs.forEach((row) => db.addInterest(two.id, row.badge, row.ranks));
+  const twoAward = db.confirmAward(two.id);
+  function slotBadges(shift, day) {
+    const src = (shift.assignments || {})[String(day)];
+    if (!src) return [];
+    const list = Array.isArray(src) ? src : [src];
+    return list.map((s) => String(s.badge));
+  }
+  const twoShift = twoAward.shift;
+  results.twoDbRound1 = eq(slotBadges(twoShift, 1), ["90", "80"]) &&
+    eq(slotBadges(twoShift, 2), ["94"]) &&
+    eq(slotBadges(twoShift, 3), ["59", "99"]) &&
+    eq(slotBadges(twoShift, 4), ["102", "48"]) &&
+    eq(slotBadges(twoShift, 5), ["101"]) &&
+    twoShift.status === "open" && twoShift.fillRound === 2;
+  results.twoBottom = rosterBadges().slice(-8).join(",") === "59,102,48,99,90,80,94,101";
+  results.twoStillOpen = sms.messageStillOpen(twoShift, "https://tfpd.example").indexOf("still open for days 2, 5") >= 0;
+  results.twoAwardText = sms.messageAwarded(twoShift).indexOf("Day 1: Fields #90, Reyes #80") >= 0 &&
+    sms.messageAwarded(twoShift).indexOf("Day 2: Lorenzo #94, 1 open") >= 0 &&
+    sms.messageAwarded(twoShift).indexOf("Day 5: Nase #101, 1 open") >= 0;
+  const twoPage = views.adminShiftPage(two.id, "http://127.0.0.1");
+  results.twoProposalPage = twoPage.indexOf("2 officers per day") >= 0 &&
+    twoPage.indexOf("Proposed") < 0 &&
+    twoPage.indexOf("Fields") >= 0 && twoPage.indexOf("Reyes") >= 0 &&
+    twoPage.indexOf("Open") >= 0;
+  db.closeShift(two.id);
+  const twoAdvance = db.confirmAward(two.id);
+  results.twoToRound3 = twoAdvance.advancedTo === 3 && twoAdvance.shift.fillRound === 3;
+  const twoExtra = db.confirmAward(two.id);
+  const afterExtraShift = twoExtra.shift;
+  results.twoDbRound3 = eq(slotBadges(afterExtraShift, 2), ["94", "90"]) &&
+    eq(slotBadges(afterExtraShift, 5), ["101", "48"]) &&
+    afterExtraShift.status === "awarded" &&
+    rosterBadges().slice(-2).join(",") === "48,90";
+  const oneOfTwo = db.createShift({ title: "Cancel one spot", multiDay: true, dayCount: 2, slotsPerDay: 2, windowMinutes: 20 });
+  db.addInterest(oneOfTwo.id, "65", [1]);
+  db.addInterest(oneOfTwo.id, "64", [1]);
+  const both = db.confirmAward(oneOfTwo.id);
+  const ambiguous = db.cancelAward(oneOfTwo.id, { day: 1 });
+  results.cancelNeedsBadge = ambiguous.status === 400 && /which officer/i.test(String(ambiguous.error || "")) &&
+    eq(slotBadges(both.shift, 1), ["65", "64"]);
+  const dropSapia = db.cancelAward(oneOfTwo.id, { day: 1, badge: "64" });
+  results.cancelOneSlot = !dropSapia.error && eq(slotBadges(db.getShift(oneOfTwo.id), 1), ["65"]) &&
+    db.getShift(oneOfTwo.id).status !== "cancelled";
+
+  const legacyMulti = JSON.parse(fs.readFileSync(db.DB_PATH, "utf8"));
+  legacyMulti.shifts.push({
+    id: "901",
+    title: "Saved one-slot",
+    location: "",
+    whenText: "",
+    whenDate: "",
+    notes: "",
+    windowMinutes: 20,
+    createdAt: Date.now(),
+    closesAt: Date.now() + 600000,
+    status: "open",
+    winnerBadge: null,
+    winnerName: null,
+    awardedAt: null,
+    awardId: null,
+    cancelledAt: null,
+    resendCount: 0,
+    resendPending: false,
+    lastResendAt: null,
+    days: [{ n: 1, date: "", label: "Mon" }, { n: 2, date: "", label: "Tue" }],
+    fillRound: 2,
+    assignments: { "1": { badge: "65", name: "Duncan", awardId: "1", round: 1 } },
+  });
+  fs.writeFileSync(db.DB_PATH, JSON.stringify(legacyMulti));
+  const oldPage = views.officerPage("901");
+  results.oldObjectAssignment = oldPage.indexOf("taken by #65 Duncan") >= 0 &&
+    oldPage.indexOf("Day 2") >= 0 &&
+    /data-day="1"[^>]*disabled/.test(oldPage) &&
+    !/data-day="2"[^>]*disabled/.test(oldPage);
+
   util2.setKey("proof-code-ok");
   const token = util2.mint();
   const cookie = "od_a=" + token;
@@ -394,7 +567,9 @@ results.multiAwardText = sms.messageAwarded({
   try {
     db.resetToSeed();
     const home = await call("GET", "/", null, { Cookie: cookie });
-    results.homeHasMulti = home.status === 200 && home.body.indexOf("more than one day") >= 0 && home.body.indexOf("dayCount") >= 0;
+    results.homeHasMulti = home.status === 200 && home.body.indexOf("more than one day") >= 0 &&
+      home.body.indexOf("dayCount") >= 0 && home.body.indexOf("Officers per day") >= 0 &&
+      home.body.indexOf("name=\"slotsPerDay\"") >= 0;
     const posted = await call("POST", "/admin/shifts",
       "title=Pulin+Construction&whenText=6p-10p&location=Greenway&multiDay=on&dayCount=3&dayLabel1=Mon&dayDate1=2026-11-02&dayLabel2=Tue&dayLabel3=Wed&windowMinutes=20",
       { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" });

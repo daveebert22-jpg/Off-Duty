@@ -1,5 +1,6 @@
 const { normalizePhone } = require("./util2");
 const db = require("./db");
+const { dayAssignees, slotsPerDayOf } = require("./lib/allocate");
 
 const MISSING =
   "Texts were not sent (Twilio config missing). Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER.";
@@ -33,11 +34,9 @@ function isMulti(shift) {
 
 function unfilledDayNums(shift) {
   if (!isMulti(shift)) return [];
+  const cap = slotsPerDayOf(shift);
   const assigned = shift.assignments || {};
-  return shift.days.map((d) => d.n).filter((n) => {
-    const slot = assigned[String(n)] || assigned[n];
-    return !(slot && slot.badge);
-  });
+  return shift.days.map((d) => d.n).filter((n) => dayAssignees(assigned[String(n)] || assigned[n]).length < cap);
 }
 
 function interestUrl(shift, base) {
@@ -48,8 +47,9 @@ function interestUrl(shift, base) {
 function messageFor(shift, base) {
   const d = shiftDetail(shift);
   const url = interestUrl(shift, base);
+  const slots = isMulti(shift) ? slotsPerDayOf(shift) : 1;
   const tail = isMulti(shift)
-    ? ". " + shift.days.length + "-day job. Tap to show interest: " + url
+    ? ". " + shift.days.length + "-day job" + (slots > 1 ? ", " + slots + " officers a day" : "") + ". Tap to show interest: " + url
     : ". Tap to show interest: " + url;
   let body = "TFPD Off Duty: " + d.detail + tail;
   if (body.length > 300) body = "TFPD Off Duty: " + d.title.slice(0, 80) + tail;
@@ -59,12 +59,18 @@ function messageFor(shift, base) {
 function messageAwarded(shift) {
   const d = shiftDetail(shift);
   if (isMulti(shift)) {
+    const cap = slotsPerDayOf(shift);
     const assigned = shift.assignments || {};
     const parts = shift.days.slice().sort((a, b) => a.n - b.n).map((day) => {
-      const slot = assigned[String(day.n)] || assigned[day.n];
-      const who = slot && slot.badge
-        ? String(slot.name || "Officer").replace(/\s+/g, " ").trim() + " #" + String(slot.badge).trim()
-        : "unfilled";
+      const people = dayAssignees(assigned[String(day.n)] || assigned[day.n]);
+      let who = "unfilled";
+      if (people.length) {
+        who = people.map((p) =>
+          String(p.name || "Officer").replace(/\s+/g, " ").trim() + " #" + String(p.badge).trim()
+        ).join(", ");
+        const open = cap - people.length;
+        if (open > 0) who += ", " + open + " open";
+      }
       const label = String(day.label || "").replace(/\s+/g, " ").trim();
       const extra = label || (day.date ? String(day.date) : "");
       return "Day " + day.n + (extra ? " " + extra : "") + ": " + who;

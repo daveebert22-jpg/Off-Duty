@@ -3,7 +3,7 @@ const path = require("path");
 const seedRoster = require("./roster");
 const { normalizePhone } = require("./util2");
 const persist = require("./persist");
-const { allocateDays, normalizeRanks } = require("./lib/allocate");
+const { allocateDays, normalizeRanks, slotsPerDayOf, dayAssignees } = require("./lib/allocate");
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DB_PATH = path.join(DATA_DIR, "store.json");
@@ -131,13 +131,20 @@ function assignedMap(shift) {
   return src;
 }
 
+function assigneesFor(shift, day) {
+  const src = assignedMap(shift);
+  return dayAssignees(src[String(day)] || src[day]);
+}
+
 function unfilledDayNumbers(shift) {
   if (!isMultiDay(shift)) return [];
+  const cap = slotsPerDayOf(shift);
+  return shift.days.map((d) => d.n).filter((n) => assigneesFor(shift, n).length < cap);
+}
+
+function hasAnyAssignee(shift) {
   const src = assignedMap(shift);
-  return shift.days.map((d) => d.n).filter((n) => {
-    const slot = src[String(n)] || src[n];
-    return !(slot && slot.badge);
-  });
+  return Object.keys(src).some((k) => dayAssignees(src[k]).length > 0);
 }
 
 function cleanLabel(raw) {
@@ -292,6 +299,7 @@ function createShift(input) {
   };
   if (days) {
     shift.days = days;
+    shift.slotsPerDay = slotsPerDayOf(input.slotsPerDay != null ? input.slotsPerDay : input.officersPerDay);
     shift.fillRound = 1;
     shift.assignments = {};
     if (!shift.whenDate) {
@@ -345,6 +353,7 @@ function proposalFor(data, shift, round) {
     days: shift.days.map((d) => d.n),
     assigned: assignedMap(shift),
     mode: Number(round) >= 3 ? "extra" : "one",
+    slotsPerDay: slotsPerDayOf(shift),
   });
 }
 
@@ -364,12 +373,34 @@ function openSecondRequest(shift, now) {
 }
 
 function finalizeMulti(shift) {
-  const any = Object.keys(assignedMap(shift)).some((k) => {
-    const slot = assignedMap(shift)[k];
-    return slot && slot.badge;
-  });
-  shift.status = any ? "awarded" : "closed";
+  shift.status = hasAnyAssignee(shift) ? "awarded" : "closed";
   shift.resendPending = false;
+}
+
+function placeAssignee(shift, day, slot) {
+  const key = String(day);
+  if (!shift.assignments || typeof shift.assignments !== "object") shift.assignments = {};
+  if (slotsPerDayOf(shift) <= 1) {
+    shift.assignments[key] = slot;
+    return;
+  }
+  const cur = shift.assignments[key];
+  const list = Array.isArray(cur) ? cur.slice() : (cur && cur.badge ? [cur] : []);
+  if (!list.some((s) => String(s.badge) === String(slot.badge))) list.push(slot);
+  shift.assignments[key] = list;
+}
+
+function removeAssignee(shift, day, badge) {
+  if (!shift.assignments) return;
+  const key = String(day);
+  const cur = shift.assignments[key];
+  if (Array.isArray(cur)) {
+    const next = cur.filter((s) => String(s.badge) !== String(badge));
+    if (next.length) shift.assignments[key] = next;
+    else delete shift.assignments[key];
+    return;
+  }
+  if (cur && String(cur.badge) === String(badge)) delete shift.assignments[key];
 }
 
 function applyRotationMoves(data, badgesInStartOrder) {
@@ -404,7 +435,7 @@ function rollInterestWindow(shiftId, now) {
 
   const interested = data.interests.some((i) => i.shiftId === String(shiftId));
   const multi = isMultiDay(shift);
-  const committed = multi && Object.keys(assignedMap(shift)).some((k) => assignedMap(shift)[k] && assignedMap(shift)[k].badge);
+  const committed = multi && hasAnyAssignee(shift);
   if (interested || committed) {
     shift.status = "closed";
     shift.closesAt = Math.min(shift.closesAt, now);
@@ -709,13 +740,13 @@ function confirmMultiDay(data, shift) {
     data.awards.push(award);
     awards.push(award);
     daysWon.forEach((d) => {
-      shift.assignments[String(d)] = {
+      placeAssignee(shift, d, {
         badge,
         name: snap.name,
         awardId,
         round,
         at: now,
-      };
+      });
     });
   });
 
@@ -859,12 +890,17 @@ function cancelMultiDay(data, shift, opts) {
   const awards = data.awards || [];
   let award = null;
   if (Number.isInteger(day) && day > 0) {
-    award = awards.find((a) =>
+    const matches = awards.filter((a) =>
       String(a.shiftId) === String(shift.id) &&
       a.status === "active" &&
       Array.isArray(a.days) &&
-      a.days.some((d) => Number(d) === day)
+      a.days.some((d) => Number(d) === day) &&
+      (!opts.badge || String(a.badge) === String(opts.badge))
     );
+    if (!opts.badge && matches.length > 1) {
+      return { error: "Say which officer to cancel", status: 400 };
+    }
+    award = matches[0] || null;
   } else if (opts.awardId) {
     const found = awards.find((a) => a.id === String(opts.awardId) && String(a.shiftId) === String(shift.id) && a.status === "active");
     if (found && Array.isArray(found.days) && found.days.length === 1) {
@@ -872,8 +908,8 @@ function cancelMultiDay(data, shift, opts) {
       day = Number(found.days[0]);
     }
   }
-  const slot = shift.assignments && shift.assignments[String(day)];
-  if (!award || !slot || String(slot.badge) !== String(award.badge)) {
+  const people = assigneesFor(shift, day);
+  if (!award || !people.some((s) => String(s.badge) === String(award.badge))) {
     return { error: Number.isInteger(day) && day > 0 ? "That day is not awarded" : "Say which day to cancel", status: 400 };
   }
 
@@ -899,7 +935,7 @@ function cancelMultiDay(data, shift, opts) {
 
   award.days = award.days.filter((d) => Number(d) !== day);
   award.cancelledDays = (award.cancelledDays || []).concat([day]);
-  delete shift.assignments[String(day)];
+  removeAssignee(shift, day, award.badge);
 
   let restored = null;
   if (award.days.length === 0) {
@@ -918,7 +954,7 @@ function cancelMultiDay(data, shift, opts) {
     award.restored = !!restored;
   }
 
-  const anyLeft = shift.assignments && Object.keys(shift.assignments).some((k) => shift.assignments[k] && shift.assignments[k].badge);
+  const anyLeft = hasAnyAssignee(shift);
   if (!anyLeft && shift.status !== "open") {
     shift.status = "cancelled";
     shift.cancelledAt = Date.now();

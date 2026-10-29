@@ -369,7 +369,7 @@ const server = http.createServer(async (req, res) => {
     m = p.match(/^\/admin\/shift\/([^/]+)\/cancel$/);
     if (req.method === "POST" && m) {
       const body = await readBody(req);
-      const r = db.cancelAward(m[1], { day: body.day, awardId: body.awardId });
+      const r = db.cancelAward(m[1], { day: body.day, awardId: body.awardId, badge: body.badge });
       if (r.error) {
         return send(res, r.status || 400, views.layout("Cancel award",
           "<section class=\"card\"><p>" + views.esc(r.error) + "</p>" +
@@ -407,7 +407,7 @@ const server = http.createServer(async (req, res) => {
     m = p.match(/^\/api\/shifts\/([^/]+)\/cancel$/);
     if (req.method === "POST" && m) {
       const body = await readBody(req);
-      const r = db.cancelAward(m[1], { day: body.day, awardId: body.awardId });
+      const r = db.cancelAward(m[1], { day: body.day, awardId: body.awardId, badge: body.badge });
       if (r.error) return send(res, r.status || 400, { error: r.error });
       return send(res, 200, r);
     }
