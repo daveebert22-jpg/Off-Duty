@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const seedRoster = require("./roster");
 const { normalizePhone } = require("./util2");
+const persist = require("./persist");
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DB_PATH = path.join(DATA_DIR, "store.json");
@@ -24,6 +25,7 @@ function writeRaw(data) {
 }
 
 function ensure() {
+  if (persist.usingPg()) return;
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(DB_PATH)) {
     writeRaw(blankStore());
@@ -42,13 +44,44 @@ function ensure() {
   if (dirty) writeRaw(data);
 }
 
+function normalizeLoaded(data) {
+  let dirty = false;
+  if (!data || typeof data !== "object") return { data: blankStore(), dirty: true };
+  if (!Array.isArray(data.awards)) {
+    data.awards = [];
+    dirty = true;
+  }
+  if (data.nextAwardId == null) {
+    data.nextAwardId = 1;
+    dirty = true;
+  }
+  return { data, dirty };
+}
+
 function read() {
+  if (persist.usingPg()) {
+    const loaded = normalizeLoaded(persist.readStore() || blankStore());
+    if (loaded.dirty) write(loaded.data);
+    return loaded.data;
+  }
   ensure();
   return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
 }
 
 function write(data) {
+  if (persist.usingPg()) {
+    persist.writeStore(data);
+    return;
+  }
   writeRaw(data);
+}
+
+async function bootstrap() {
+  await persist.init();
+  if (persist.usingPg() && !persist.hasStore()) {
+    write(blankStore());
+    await persist.flush();
+  }
 }
 
 function resetToSeed() {
@@ -577,4 +610,5 @@ module.exports = {
   awardRestoreInfo,
   RESTORE_WINDOW_MS,
   DB_PATH,
+  bootstrap,
 };

@@ -21,3 +21,7 @@ services:
         sync: false
       - key: TWILIO_FROM_NUMBER
         sync: false
+      # Internal connection string of the existing free Postgres (Ohio).
+      # Do not commit the URL. Free Postgres expires 2026-11-28 unless upgraded.
+      - key: DATABASE_URL
+        sync: false

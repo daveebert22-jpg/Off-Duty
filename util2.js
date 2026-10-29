@@ -1,14 +1,21 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const persist = require("./persist");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const CFG_PATH = path.join(DATA_DIR, "cfg.json");
 const COOKIE = "od_a";
 const TTL = 14 * 24 * 60 * 60 * 1000;
 const jar = new Map();
 function ensureDir(){ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR,{recursive:true}); }
-function readCfg(){ ensureDir(); if (!fs.existsSync(CFG_PATH)) return null; try { return JSON.parse(fs.readFileSync(CFG_PATH,"utf8")); } catch { return null; } }
-function writeCfg(obj){ ensureDir(); fs.writeFileSync(CFG_PATH, JSON.stringify(obj,null,2)); }
+function readCfg(){
+  if (persist.usingPg()) return persist.readCfg();
+  ensureDir(); if (!fs.existsSync(CFG_PATH)) return null; try { return JSON.parse(fs.readFileSync(CFG_PATH,"utf8")); } catch { return null; }
+}
+function writeCfg(obj){
+  if (persist.usingPg()) { persist.writeCfg(obj); return; }
+  ensureDir(); fs.writeFileSync(CFG_PATH, JSON.stringify(obj,null,2));
+}
 function hasKey(){ const a=readCfg(); return !!(a && a.keyHash && a.salt); }
 function digest(raw, salt){ return crypto.createHash("sha256").update(String(salt)+":"+String(raw)).digest("hex"); }
 function setKey(raw){ const p=String(raw||""); if (p.length<4) return {error:"Must be at least 4 characters"}; const salt=crypto.randomBytes(16).toString("hex"); writeCfg({keyHash:digest(p,salt),salt,updatedAt:Date.now()}); return {ok:true}; }

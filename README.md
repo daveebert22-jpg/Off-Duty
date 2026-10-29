@@ -12,7 +12,7 @@ Phone-friendly Off Duty interest + rotation award for Tinton Falls PD.
 6. Confirm award texts everyone with a phone that the job was filled and who got it, then moves the winner to the bottom of the rotation (saves prior spot).
 7. Cancel within ~14 days restores the officer to their prior list position.
 
-Storage: `data/store.json` (shifts/roster). Admin code hash: `data/cfg.json` (created on first setup; not plaintext).
+Storage: with `DATABASE_URL` set, one Postgres table `app_kv` (`key` text, `value` jsonb) holds `store` (shifts, roster, phones, awards) and `cfg` (admin code hash). Without `DATABASE_URL`, the same data stays in `data/store.json` and `data/cfg.json`. Admin login sessions stay in memory and are dropped on restart; the admin code itself is kept.
 
 ## Admin access
 
@@ -20,7 +20,20 @@ Storage: `data/store.json` (shifts/roster). Admin code hash: `data/cfg.json` (cr
 - First visit to `/` with no admin code set → **/setup** (choose a code, min 4 chars).
 - Later visits → **/login**, then a session cookie (`od_a`).
 - Officers never need the admin code; they only use `/s/<shiftId>`.
-- To reset the admin code: delete `data/cfg.json` and restart, then open `/setup` again.
+- To reset the admin code in file mode: delete `data/cfg.json` and restart, then open `/setup` again.
+- To reset it when `DATABASE_URL` is set: `DELETE FROM app_kv WHERE key = 'cfg';` and restart, then open `/setup` again.
+
+## Database (Render)
+
+The free web service disk is wiped on sleep and redeploy. Set `DATABASE_URL` to the **internal** connection string of the Render Postgres instance (same region). The app creates `app_kv` if it is missing. The first boot copies `data/store.json` and `data/cfg.json` into the database when those rows are empty, then uses Postgres from then on. Local runs without `DATABASE_URL` keep using the files.
+
+Internal hostnames connect without SSL. External hostnames use SSL with `rejectUnauthorized: false`. If the first attempt fails, the app tries the other way.
+
+On startup the app replays elapsed interest windows from the saved `closesAt` times: a shift with interested officers closes so it can be awarded, and an unfilled shift reopens and sends the still-open text (same rules as while the process is running). Confirming the award is still an admin action.
+
+Render free Postgres expires 30 days after it was created (**2026-11-28**) unless the database is upgraded. After that date the service cannot save shifts until the database is replaced and `DATABASE_URL` is updated.
+
+`pg` is vendored in the repo because the Render build command is `true` and does not run `npm install`. `node server.js` works from a fresh clone. Changing the build command to `npm install` is optional and not required for this deploy.
 
 ## Text alerts (Twilio)
 

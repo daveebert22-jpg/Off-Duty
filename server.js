@@ -6,11 +6,22 @@ const db = require("./db");
 const views = require("./lib/views");
 const util2 = require("./util2");
 const sms = require("./sms");
+const persist = require("./persist");
 
 const PORT = Number(process.env.PORT) || 3847;
 const PUBLIC = path.join(__dirname, "public");
 
-function send(res, status, body, headers) {
+async function send(res, status, body, headers) {
+  try {
+    await persist.flush();
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) {
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Save failed");
+    }
+    return;
+  }
   const h = Object.assign({ "Content-Type": "text/html; charset=utf-8" }, headers || {});
   if (typeof body === "object" && body !== null && !Buffer.isBuffer(body)) {
     h["Content-Type"] = "application/json; charset=utf-8";
@@ -18,6 +29,21 @@ function send(res, status, body, headers) {
   }
   res.writeHead(status, h);
   res.end(body);
+}
+
+async function redirect(res, location, extra) {
+  try {
+    await persist.flush();
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) {
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Save failed");
+    }
+    return;
+  }
+  res.writeHead(303, Object.assign({ Location: location }, extra || {}));
+  res.end();
 }
 
 function readBody(req) {
@@ -189,15 +215,13 @@ const server = http.createServer(async (req, res) => {
     // Setup (first run only)
     if (req.method === "GET" && p === "/setup") {
       if (util2.hasKey()) {
-        res.writeHead(303, { Location: "/login" });
-        return res.end();
+        return redirect(res, "/login");
       }
       return send(res, 200, views.loginPage({ setup: true }));
     }
     if (req.method === "POST" && p === "/setup") {
       if (util2.hasKey()) {
-        res.writeHead(303, { Location: "/login" });
-        return res.end();
+        return redirect(res, "/login");
       }
       const body = await readBody(req);
       if (String(body.code || "") !== String(body.code2 || "")) {
@@ -206,26 +230,22 @@ const server = http.createServer(async (req, res) => {
       const r = util2.setKey(body.code);
       if (r.error) return send(res, 400, views.loginPage({ setup: true, error: r.error }));
       const id = util2.mint();
-      res.writeHead(303, { Location: "/", "Set-Cookie": util2.cookieHeader(id) });
-      return res.end();
+      return redirect(res, "/", { "Set-Cookie": util2.cookieHeader(id) });
     }
 
     // Login / logout
     if (req.method === "GET" && p === "/login") {
       if (!util2.hasKey()) {
-        res.writeHead(303, { Location: "/setup" });
-        return res.end();
+        return redirect(res, "/setup");
       }
       if (util2.isAuthed(req)) {
-        res.writeHead(303, { Location: url.searchParams.get("next") || "/" });
-        return res.end();
+        return redirect(res, url.searchParams.get("next") || "/");
       }
       return send(res, 200, views.loginPage({ next: url.searchParams.get("next") || "/" }));
     }
     if (req.method === "POST" && p === "/login") {
       if (!util2.hasKey()) {
-        res.writeHead(303, { Location: "/setup" });
-        return res.end();
+        return redirect(res, "/setup");
       }
       const body = await readBody(req);
       const next = body.next || url.searchParams.get("next") || "/";
@@ -234,13 +254,11 @@ const server = http.createServer(async (req, res) => {
         return send(res, 401, views.loginPage({ error: "Incorrect code", next: safe }));
       }
       const id = util2.mint();
-      res.writeHead(303, { Location: safe, "Set-Cookie": util2.cookieHeader(id) });
-      return res.end();
+      return redirect(res, safe, { "Set-Cookie": util2.cookieHeader(id) });
     }
     if (req.method === "POST" && p === "/logout") {
       util2.drop(util2.getToken(req));
-      res.writeHead(303, { Location: "/login", "Set-Cookie": util2.clearCookieHeader() });
-      return res.end();
+      return redirect(res, "/login", { "Set-Cookie": util2.clearCookieHeader() });
     }
 
     // Officer public routes (no roster rankings)
@@ -303,8 +321,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && (p === "/" || p === "/admin")) {
       if (!util2.hasKey()) {
-        res.writeHead(303, { Location: "/setup" });
-        return res.end();
+        return redirect(res, "/setup");
       }
       return send(res, 200, views.adminHome({ savedBadge: url.searchParams.get("phone") }));
     }
@@ -313,8 +330,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const shift = db.createShift(body);
       await announceShift(shift, req);
-      res.writeHead(303, { Location: "/admin/shift/" + shift.id });
-      return res.end();
+      return redirect(res, "/admin/shift/" + shift.id);
     }
 
     m = p.match(/^\/admin\/shift\/([^/]+)$/);
@@ -328,8 +344,7 @@ const server = http.createServer(async (req, res) => {
     m = p.match(/^\/admin\/shift\/([^/]+)\/close$/);
     if (req.method === "POST" && m) {
       db.closeShift(m[1]);
-      res.writeHead(303, { Location: "/admin/shift/" + m[1] });
-      return res.end();
+      return redirect(res, "/admin/shift/" + m[1]);
     }
 
     m = p.match(/^\/admin\/shift\/([^/]+)\/award$/);
@@ -337,8 +352,7 @@ const server = http.createServer(async (req, res) => {
       const r = db.confirmAward(m[1]);
       if (r.error) return send(res, r.status || 400, views.layout("Error", "<p>" + views.esc(r.error) + "</p>", "/admin/shift/" + m[1]));
       await announceAward(r.shift);
-      res.writeHead(303, { Location: "/admin/shift/" + m[1] });
-      return res.end();
+      return redirect(res, "/admin/shift/" + m[1]);
     }
 
     m = p.match(/^\/admin\/shift\/([^/]+)\/cancel$/);
@@ -351,8 +365,7 @@ const server = http.createServer(async (req, res) => {
           "<a class=\"btn\" href=\"/\">Admin home</a></p></section>",
           "/admin/shift/" + m[1]));
       }
-      res.writeHead(303, { Location: "/admin/shift/" + m[1] + "?restored=1" });
-      return res.end();
+      return redirect(res, "/admin/shift/" + m[1] + "?restored=1");
     }
 
     if (req.method === "POST" && p === "/api/shifts") {
@@ -403,8 +416,7 @@ const server = http.createServer(async (req, res) => {
       if (r.error) {
         return send(res, r.status || 400, views.adminHome({ error: r.error }));
       }
-      res.writeHead(303, { Location: "/?phone=" + encodeURIComponent(r.officer.badge) + "#b-" + encodeURIComponent(r.officer.badge) });
-      return res.end();
+      return redirect(res, "/?phone=" + encodeURIComponent(r.officer.badge) + "#b-" + encodeURIComponent(r.officer.badge));
     }
 
     m = p.match(/^\/api\/roster\/([^/]+)\/phone$/);
@@ -422,14 +434,32 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-if (require.main === module) {
-  db.getRoster();
+function armSweep() {
   const sweep = setInterval(() => {
-    db.rollExpiredShifts();
-    flushResendTexts(fallbackBase()).catch((err) => console.error("resend sweep", err && err.message));
+    try { db.rollExpiredShifts(); } catch (err) { console.error(err); }
+    persist.flush()
+      .then(() => flushResendTexts(fallbackBase()))
+      .catch((err) => console.error("resend sweep", err && err.message));
   }, 30000);
   if (sweep.unref) sweep.unref();
-  server.listen(PORT, "0.0.0.0", () => console.log("TFPD Off Duty on http://0.0.0.0:" + PORT));
+}
+
+if (require.main === module) {
+  db.bootstrap()
+    .then(() => {
+      db.rollExpiredShifts();
+      return persist.flush();
+    })
+    .then(() => flushResendTexts(fallbackBase()))
+    .then(() => persist.flush())
+    .then(() => {
+      armSweep();
+      server.listen(PORT, "0.0.0.0", () => console.log("TFPD Off Duty on http://0.0.0.0:" + PORT));
+    })
+    .catch((err) => {
+      console.error("startup failed", err);
+      process.exit(1);
+    });
 }
 
 module.exports = { server, PORT };
