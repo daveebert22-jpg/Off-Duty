@@ -7,10 +7,22 @@ Phone-friendly Off Duty interest + rotation award for Tinton Falls PD.
 1. Admin logs in, posts a shift (default 20-minute interest window).
 2. Officers who have a phone on file are texted the interest link. The shareable link can still be copied.
 3. Officers open /s/:id, pick badge/name, tap Interested (no rotation standings shown). They can withdraw before the window closes and before the shift is awarded. If they already have an awarded job the same Sunday–Saturday week, the confirmation page reminds them and still keeps the interest.
-4. After the window (or Close now), if anyone is interested, suggest the officer highest on the rotation (top = waiting longest).
+4. After the window (or Close now), if anyone is interested, suggest the officer highest on the rotation (top = waiting longest). On a multi-day job the suggestion is one officer per day: walk the list from the top and give each interested officer their highest-ranked day that is still open. One day per officer in that round.
 5. If the window ends with nobody interested, the shift stays open: a new interest window starts and officers with a phone are texted that it is still open. That repeats up to `SMS_UNFILLED_RESEND_MAX` times (default **1**). Then the shift closes unfilled. Close now does not resend.
-6. Confirm award texts everyone with a phone that the job was filled and who got it, then moves the winner to the bottom of the rotation (saves prior spot).
-7. Cancel within ~14 days restores the officer to their prior list position.
+6. Confirm award texts everyone with a phone that the job was filled and who got it, then moves the winner to the bottom of the rotation (saves prior spot). A multi-day confirm texts every day and who has it (or that it is still unfilled). Each officer who received a day in that round moves to the bottom once, in the list order from the start of the round.
+7. Cancel within ~14 days restores the officer to their prior list position. On a multi-day job, cancel is per day. The list moves back only when that officer's last day from that round is cancelled.
+
+### Multi-day jobs
+
+When posting, check **This job covers more than one day** and set how many days (2–60). Each day is numbered 1..N and can have its own date and a short label.
+
+Officers open the same interest link, pick their name, and tap days in the order they want them. The order is shown and can be changed with Up, Down, or Remove, or by editing the preference box (`1, 3, 5, 4`). Submitting again before the award updates that order. Withdraw still removes them from consideration.
+
+- **Round 1:** top of the rotation first. Each officer gets their highest-ranked day that is still open. One day each.
+- **Round 2:** if days are still empty, this is the existing still-open resend. Officers who already have a day on this job wait. Same one-day rule for everyone else. It uses the same `SMS_UNFILLED_RESEND_MAX` cap as a shift nobody wanted. If that resend was already used, or the cap is 0, the leftover days stay unfilled and round 3 does not run. Close window now does not send the text by itself; confirming a partial round 1 award does, when a resend is still allowed.
+- **Round 3:** only after that second request, if days are still empty. There is no third text. The admin confirms another pass over the preferences already saved. Officers who already hold a day can take more. Each pass gives one more day, from the top of the list, and repeats until a pass assigns nothing.
+
+The same-week reminder uses each day's own date. An awarded day counts in that day's Sunday–Saturday week. A single-day job is unchanged.
 
 Storage: with `DATABASE_URL` set, one Postgres table `app_kv` (`key` text, `value` jsonb) holds `store` (shifts, roster, phones, awards) and `cfg` (admin code hash). Without `DATABASE_URL`, the same data stays in `data/store.json` and `data/cfg.json`. Admin login sessions stay in memory and are dropped on restart; the admin code itself is kept.
 
@@ -53,7 +65,7 @@ On Render: open the service → **Environment** → add the three variables → 
 
 ### When a shift is awarded
 
-Everyone with a phone, including the officer who got the job, receives a short text: `TFPD Off Duty: [title — when] filled by [name] (badge #).` If Twilio is not configured, the award still stands and the award section says texts were not sent.
+Everyone with a phone, including the officer who got the job, receives a short text: `TFPD Off Duty: [title — when] filled by [name] (badge #).` A multi-day award lists each day and who got it, or `unfilled`. If Twilio is not configured, the award still stands and the award section says texts were not sent.
 
 ### Still open
 

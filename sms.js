@@ -27,6 +27,19 @@ function shiftDetail(shift) {
   return { title, when, detail: when ? title + " — " + when : title };
 }
 
+function isMulti(shift) {
+  return !!(shift && Array.isArray(shift.days) && shift.days.length > 1);
+}
+
+function unfilledDayNums(shift) {
+  if (!isMulti(shift)) return [];
+  const assigned = shift.assignments || {};
+  return shift.days.map((d) => d.n).filter((n) => {
+    const slot = assigned[String(n)] || assigned[n];
+    return !(slot && slot.badge);
+  });
+}
+
 function interestUrl(shift, base) {
   const root = String(base || "").replace(/\/$/, "");
   return root + "/s/" + shift.id;
@@ -35,13 +48,31 @@ function interestUrl(shift, base) {
 function messageFor(shift, base) {
   const d = shiftDetail(shift);
   const url = interestUrl(shift, base);
-  let body = "TFPD Off Duty: " + d.detail + ". Tap to show interest: " + url;
-  if (body.length > 300) body = "TFPD Off Duty: " + d.title.slice(0, 80) + ". Tap to show interest: " + url;
+  const tail = isMulti(shift)
+    ? ". " + shift.days.length + "-day job. Tap to show interest: " + url
+    : ". Tap to show interest: " + url;
+  let body = "TFPD Off Duty: " + d.detail + tail;
+  if (body.length > 300) body = "TFPD Off Duty: " + d.title.slice(0, 80) + tail;
   return body;
 }
 
 function messageAwarded(shift) {
   const d = shiftDetail(shift);
+  if (isMulti(shift)) {
+    const assigned = shift.assignments || {};
+    const parts = shift.days.slice().sort((a, b) => a.n - b.n).map((day) => {
+      const slot = assigned[String(day.n)] || assigned[day.n];
+      const who = slot && slot.badge
+        ? String(slot.name || "Officer").replace(/\s+/g, " ").trim() + " #" + String(slot.badge).trim()
+        : "unfilled";
+      const label = String(day.label || "").replace(/\s+/g, " ").trim();
+      const extra = label || (day.date ? String(day.date) : "");
+      return "Day " + day.n + (extra ? " " + extra : "") + ": " + who;
+    });
+    let body = "TFPD Off Duty: " + d.detail + " filled. " + parts.join("; ") + ".";
+    if (body.length > 1400) body = body.slice(0, 1397) + "...";
+    return body;
+  }
   const name = String((shift && shift.winnerName) || "an officer").replace(/\s+/g, " ").trim();
   const badge = String((shift && shift.winnerBadge) || "").replace(/\s+/g, " ").trim();
   let body = "TFPD Off Duty: " + d.detail + " filled by " + name + " (badge #" + badge + ").";
@@ -52,8 +83,11 @@ function messageAwarded(shift) {
 function messageStillOpen(shift, base) {
   const d = shiftDetail(shift);
   const url = interestUrl(shift, base);
-  let body = "TFPD Off Duty: " + d.detail + " still open. Tap to show interest: " + url;
-  if (body.length > 300) body = "TFPD Off Duty: " + d.title.slice(0, 80) + " still open. Tap to show interest: " + url;
+  const openDays = unfilledDayNums(shift);
+  const dayNote = openDays.length ? " for days " + openDays.join(", ") : "";
+  let body = "TFPD Off Duty: " + d.detail + " still open" + dayNote + ". Tap to show interest: " + url;
+  if (body.length > 300) body = "TFPD Off Duty: " + d.title.slice(0, 80) + " still open" + dayNote + ". Tap to show interest: " + url;
+  if (body.length > 300) body = "TFPD Off Duty: " + d.title.slice(0, 60) + " still open. Tap to show interest: " + url;
   return body;
 }
 
@@ -214,7 +248,8 @@ async function notifyAwarded(shift, opts) {
 }
 
 async function notifyStillOpen(shift, base, opts) {
-  return deliver(messageStillOpen(shift, base), opts, "resend");
+  const full = (shift && shift.id && db.getShift(shift.id)) || shift;
+  return deliver(messageStillOpen(full, base), opts, "resend");
 }
 
 function messageSameWeek(shift, jobs) {

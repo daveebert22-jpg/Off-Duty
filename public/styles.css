@@ -54,3 +54,19 @@ a{color:#93c5fd}
 .week-warn{margin:12px 0}
 .week-warn .list{margin:8px 0 8px 1.1rem}
 .btn.danger.big{width:100%}
+.check{display:flex;flex-direction:row;align-items:center;gap:10px;color:var(--ink);font-weight:600}
+.check input{width:22px;height:22px;padding:0}
+.day-edit{display:grid;gap:6px;margin:8px 0;padding-bottom:8px;border-bottom:1px solid #243552}
+.day-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.day-btn{display:flex;align-items:center;gap:8px;min-height:52px;padding:10px 12px;border-radius:12px;border:1px solid #334155;background:#0f172a;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.day-btn.on{border-color:#60a5fa;background:#1e3a8a}
+.day-btn.taken,.day-btn:disabled{opacity:.55;cursor:default}
+.day-rank{display:inline-flex;align-items:center;justify-content:center;min-width:1.6em;height:1.6em;padding:0 6px;border-radius:999px;background:#334155;font-weight:800}
+.day-btn.on .day-rank{background:#3b82f6}
+.rank-list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.rank-list li{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.rank-list .btn{padding:8px 10px}
+.proposal{display:grid;gap:4px;margin:8px 0}
+.proposal-row{display:grid;grid-template-columns:1fr;gap:4px;padding:10px 0;border-bottom:1px solid #243552}
+.award-day{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-top:8px}
+@media(min-width:480px){.proposal-row{grid-template-columns:1.2fr 1fr auto;align-items:center}}

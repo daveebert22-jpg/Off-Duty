@@ -3,6 +3,7 @@ const path = require("path");
 const seedRoster = require("./roster");
 const { normalizePhone } = require("./util2");
 const persist = require("./persist");
+const { allocateDays, normalizeRanks } = require("./lib/allocate");
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DB_PATH = path.join(DATA_DIR, "store.json");
@@ -121,38 +122,161 @@ function weekStartKey(isoDate) {
   return sunday.getUTCFullYear() + "-" + sm + "-" + sd;
 }
 
-function sameWeekAwards(badge, whenDate) {
-  const key = weekStartKey(whenDate);
-  if (!key) return [];
+function isMultiDay(shift) {
+  return !!(shift && Array.isArray(shift.days) && shift.days.length > 1);
+}
+
+function assignedMap(shift) {
+  const src = shift && shift.assignments && typeof shift.assignments === "object" ? shift.assignments : {};
+  return src;
+}
+
+function unfilledDayNumbers(shift) {
+  if (!isMultiDay(shift)) return [];
+  const src = assignedMap(shift);
+  return shift.days.map((d) => d.n).filter((n) => {
+    const slot = src[String(n)] || src[n];
+    return !(slot && slot.badge);
+  });
+}
+
+function cleanLabel(raw) {
+  return String(raw || "").replace(/\s+/g, " ").trim().slice(0, 40);
+}
+
+function normalizeDayList(list) {
+  if (!Array.isArray(list)) return null;
+  const days = [];
+  list.forEach((item, idx) => {
+    if (days.length >= 60) return;
+    const src = item && typeof item === "object" ? item : { label: String(item || "") };
+    let n = Number(src.n != null ? src.n : src.day);
+    if (!Number.isInteger(n) || n < 1) n = idx + 1;
+    days.push({
+      n,
+      date: normalizeWhenDate(src.date || src.whenDate || ""),
+      label: cleanLabel(src.label || ""),
+    });
+  });
+  if (days.length < 2) return null;
+  const seen = new Set();
+  const contiguous = days.every((d, i) => d.n === i + 1) && days.every((d) => {
+    if (seen.has(d.n)) return false;
+    seen.add(d.n);
+    return d.n >= 1 && d.n <= 60;
+  });
+  if (!contiguous) {
+    return days.slice(0, 60).map((d, i) => ({ n: i + 1, date: d.date, label: d.label }));
+  }
+  return days;
+}
+
+function parseDays(input) {
+  if (!input || typeof input !== "object") return null;
+  let list = input.days;
+  if (typeof list === "string" && list.trim().charAt(0) === "[") {
+    try { list = JSON.parse(list); } catch (e) { list = null; }
+  }
+  if (Array.isArray(list) && list.length) {
+    const norm = normalizeDayList(list);
+    if (norm) return norm;
+  }
+  const flag = input.multiDay === "on" || input.multiDay === "1" || input.multiDay === "true" || input.multiDay === true || input.multiDay === "yes";
+  if (!flag) return null;
+  let n = Math.floor(Number(input.dayCount));
+  if (!Number.isFinite(n) || n < 2) n = 5;
+  if (n > 60) n = 60;
+  const days = [];
+  for (let i = 1; i <= n; i++) {
+    days.push({
+      n: i,
+      date: normalizeWhenDate(input["dayDate" + i] || input["day_date_" + i] || ""),
+      label: cleanLabel(input["dayLabel" + i] || input["day_label_" + i] || ""),
+    });
+  }
+  return days;
+}
+
+function awardDates(award, shift) {
+  if (award && Array.isArray(award.days) && award.days.length) {
+    const dates = award.days.map((d) => {
+      const explicit = award.dayDates && award.dayDates[String(d)];
+      if (isIsoDate(explicit)) return explicit;
+      return isIsoDate(shift && shift.whenDate) ? shift.whenDate : "";
+    }).filter((d) => isIsoDate(d));
+    if (dates.length) return dates;
+  }
+  if (award && isIsoDate(award.dayDate)) return [award.dayDate];
+  if (shift && isIsoDate(shift.whenDate)) return [shift.whenDate];
+  return [];
+}
+
+function sameWeekAwards(badge, whenDate, extraDates, exceptShiftId) {
+  const keys = new Set();
+  const primary = weekStartKey(whenDate);
+  if (primary) keys.add(primary);
+  (extraDates || []).forEach((d) => {
+    const k = weekStartKey(d);
+    if (k) keys.add(k);
+  });
+  if (!keys.size) return [];
   const data = read();
   const out = [];
+  const seenShift = new Set();
   (data.awards || []).forEach((a) => {
     if (String(a.badge) !== String(badge) || a.status !== "active") return;
+    if (exceptShiftId && String(a.shiftId) === String(exceptShiftId)) return;
+    if (seenShift.has(a.shiftId)) return;
     const shift = data.shifts.find((s) => s.id === a.shiftId);
-    if (!shift || shift.status !== "awarded") return;
-    if (weekStartKey(shift.whenDate) !== key) return;
+    if (!shift || shift.status === "cancelled") return;
+    if (shift.status !== "awarded" && shift.status !== "open" && shift.status !== "closed") return;
+    const dates = awardDates(a, shift);
+    const match = dates.find((d) => keys.has(weekStartKey(d)));
+    if (!match) return;
+    let dayNum = null;
+    if (a.dayDates && Array.isArray(a.days)) {
+      a.days.forEach((d) => {
+        if (dayNum == null && a.dayDates[String(d)] === match) dayNum = Number(d);
+      });
+    }
+    const whenText = dayNum
+      ? "Day " + dayNum + (shift.whenText ? " · " + shift.whenText : "")
+      : (shift.whenText || "");
+    seenShift.add(shift.id);
     out.push({
       shiftId: shift.id,
       title: shift.title || "Off Duty",
-      whenText: shift.whenText || "",
-      whenDate: shift.whenDate || "",
+      whenText,
+      whenDate: match || shift.whenDate || "",
     });
   });
   return out;
 }
 
-function createShift({ title, location, whenText, whenDate, notes, windowMinutes }) {
+function interestDates(shift, ranks) {
+  if (!isMultiDay(shift)) return { whenDate: shift.whenDate || "", extra: [] };
+  const dates = (ranks || []).map((n) => {
+    const meta = shift.days.find((d) => d.n === Number(n));
+    if (meta && isIsoDate(meta.date)) return meta.date;
+    return isIsoDate(shift.whenDate) ? shift.whenDate : "";
+  }).filter((d) => isIsoDate(d));
+  return { whenDate: dates[0] || "", extra: dates.slice(1) };
+}
+
+function createShift(input) {
+  input = input || {};
   const data = read();
   const id = String(data.nextShiftId++);
   const now = Date.now();
-  const mins = Number(windowMinutes) > 0 ? Number(windowMinutes) : 20;
+  const mins = Number(input.windowMinutes) > 0 ? Number(input.windowMinutes) : 20;
+  const days = parseDays(input);
   const shift = {
     id,
-    title: title || "Off Duty",
-    location: location || "",
-    whenText: whenText || "",
-    whenDate: normalizeWhenDate(whenDate),
-    notes: notes || "",
+    title: input.title || "Off Duty",
+    location: input.location || "",
+    whenText: input.whenText || "",
+    whenDate: normalizeWhenDate(input.whenDate),
+    notes: input.notes || "",
     windowMinutes: mins,
     createdAt: now,
     closesAt: now + mins * 60 * 1000,
@@ -166,6 +290,15 @@ function createShift({ title, location, whenText, whenDate, notes, windowMinutes
     resendPending: false,
     lastResendAt: null,
   };
+  if (days) {
+    shift.days = days;
+    shift.fillRound = 1;
+    shift.assignments = {};
+    if (!shift.whenDate) {
+      const firstDated = days.find((d) => d.date);
+      if (firstDated) shift.whenDate = firstDated.date;
+    }
+  }
   data.shifts.push(shift);
   write(data);
   return shift;
@@ -200,6 +333,65 @@ function resendWindowMinutes(shift) {
   return Math.min(24 * 60, n);
 }
 
+function rosterSorted(data) {
+  return data.roster.slice().sort((a, b) => a.order - b.order);
+}
+
+function proposalFor(data, shift, round) {
+  if (!isMultiDay(shift)) return [];
+  return allocateDays({
+    roster: rosterSorted(data),
+    interests: data.interests.filter((i) => i.shiftId === String(shift.id)),
+    days: shift.days.map((d) => d.n),
+    assigned: assignedMap(shift),
+    mode: Number(round) >= 3 ? "extra" : "one",
+  });
+}
+
+function canOfferSecondRequest(shift) {
+  return (Number(shift.resendCount) || 0) < unfilledResendMax();
+}
+
+function openSecondRequest(shift, now) {
+  const mins = resendWindowMinutes(shift);
+  shift.resendCount = (Number(shift.resendCount) || 0) + 1;
+  shift.lastResendAt = now;
+  shift.closesAt = now + mins * 60 * 1000;
+  shift.resendWindowMinutes = mins;
+  shift.resendPending = true;
+  shift.status = "open";
+  shift.fillRound = 2;
+}
+
+function finalizeMulti(shift) {
+  const any = Object.keys(assignedMap(shift)).some((k) => {
+    const slot = assignedMap(shift)[k];
+    return slot && slot.badge;
+  });
+  shift.status = any ? "awarded" : "closed";
+  shift.resendPending = false;
+}
+
+function applyRotationMoves(data, badgesInStartOrder) {
+  const sorted = rosterSorted(data);
+  const today = new Date();
+  const md = today.getMonth() + 1 + "-" + today.getDate();
+  const snapshots = [];
+  badgesInStartOrder.forEach((badge) => {
+    const idx = sorted.findIndex((o) => o.badge === badge);
+    if (idx < 0) return;
+    const priorOrder = idx;
+    const priorLastAward = sorted[idx].lastAward;
+    const [w] = sorted.splice(idx, 1);
+    w.lastAward = md;
+    sorted.push(w);
+    snapshots.push({ badge: w.badge, name: w.name, priorOrder, priorLastAward });
+  });
+  sorted.forEach((o, i) => { o.order = i; });
+  data.roster = sorted;
+  return snapshots;
+}
+
 // When an open window has elapsed: close if anyone is interested (ready to award)
 // or the resend cap is hit. Otherwise start another interest window and flag SMS.
 function rollInterestWindow(shiftId, now) {
@@ -211,12 +403,17 @@ function rollInterestWindow(shiftId, now) {
   if (now <= shift.closesAt) return { action: "open", shift: getShift(shiftId) };
 
   const interested = data.interests.some((i) => i.shiftId === String(shiftId));
-  if (interested) {
+  const multi = isMultiDay(shift);
+  const committed = multi && Object.keys(assignedMap(shift)).some((k) => assignedMap(shift)[k] && assignedMap(shift)[k].badge);
+  if (interested || committed) {
     shift.status = "closed";
     shift.closesAt = Math.min(shift.closesAt, now);
     shift.resendPending = false;
+    if (multi && Number(shift.fillRound) === 2 && !proposalFor(data, shift, 2).length && unfilledDayNumbers(shift).length) {
+      shift.fillRound = 3;
+    }
     write(data);
-    return { action: "closed", reason: "interested", shift: getShift(shiftId) };
+    return { action: "closed", reason: interested ? "interested" : "partial", shift: getShift(shiftId) };
   }
 
   const count = Number(shift.resendCount) || 0;
@@ -260,13 +457,15 @@ function takePendingResends() {
       whenText: s.whenText,
       location: s.location,
       resendCount: s.resendCount,
+      days: s.days || null,
+      assignments: s.assignments || null,
     });
   });
   if (pending.length) write(data);
   return pending;
 }
 
-function addInterest(shiftId, badge) {
+function addInterest(shiftId, badge, ranksRaw) {
   const rolled = rollInterestWindow(shiftId);
   if (rolled.error) return rolled;
   const data = read();
@@ -275,19 +474,36 @@ function addInterest(shiftId, badge) {
   if (shift.status !== "open") return { error: "Interest window has ended", status: 400 };
   const officer = data.roster.find((o) => o.badge === String(badge));
   if (!officer) return { error: "Unknown badge", status: 400 };
+  let ranks = null;
+  if (isMultiDay(shift)) {
+    ranks = normalizeRanks(ranksRaw).filter((n) => shift.days.some((d) => d.n === n));
+    if (!ranks.length) {
+      return { error: "Pick the days you want, in the order you want them", status: 400 };
+    }
+  }
   const already = data.interests.find(
     (i) => i.shiftId === String(shiftId) && i.badge === String(badge)
   );
-  if (already) return { error: "Already marked interested", status: 409, interest: already };
+  if (already && !isMultiDay(shift)) return { error: "Already marked interested", status: 409, interest: already };
+  const dates = interestDates(shift, ranks || []);
+  const sameWeek = sameWeekAwards(officer.badge, dates.whenDate, dates.extra, shift.id);
+  if (already) {
+    already.ranks = ranks;
+    already.name = officer.name;
+    already.at = Date.now();
+    write(data);
+    return { interest: already, sameWeek, updated: true };
+  }
   const interest = {
     shiftId: String(shiftId),
     badge: officer.badge,
     name: officer.name,
     at: Date.now(),
   };
+  if (ranks) interest.ranks = ranks;
   data.interests.push(interest);
   write(data);
-  return { interest, sameWeek: sameWeekAwards(officer.badge, shift.whenDate) };
+  return { interest, sameWeek };
 }
 
 function removeInterest(shiftId, badge) {
@@ -364,7 +580,9 @@ function closeShift(shiftId) {
   shift.closesAt = Math.min(shift.closesAt, Date.now());
   shift.resendPending = false;
   write(data);
-  return { shift, suggestion: computeWinner(data, shiftId) };
+  if (!isMultiDay(shift)) return { shift, suggestion: computeWinner(data, shiftId) };
+  const info = suggestWinner(shiftId);
+  return { shift: info.shift || shift, suggestion: null, proposal: info.proposal || [], multi: true };
 }
 
 function computeWinner(data, shiftId) {
@@ -379,10 +597,148 @@ function computeWinner(data, shiftId) {
 function suggestWinner(shiftId) {
   const rolled = rollInterestWindow(shiftId);
   if (rolled.error) return rolled;
+  const shift = getShift(shiftId);
+  const interests = getInterests(shiftId);
+  if (!isMultiDay(shift)) {
+    return {
+      shift,
+      interests,
+      suggestion: computeWinner(read(), shiftId),
+    };
+  }
+  const pending = shift.status === "open" || shift.status === "closed";
+  const round = Number(shift.fillRound) || 1;
   return {
-    shift: getShift(shiftId),
-    interests: getInterests(shiftId),
-    suggestion: computeWinner(read(), shiftId),
+    shift,
+    interests,
+    suggestion: null,
+    multi: true,
+    fillRound: round,
+    proposal: pending ? proposalFor(read(), shift, round) : [],
+    unfilled: unfilledDayNumbers(shift),
+    assignments: assignedMap(shift),
+  };
+}
+
+function confirmMultiDay(data, shift) {
+  if (shift.status === "awarded") return { error: "Already awarded", status: 400 };
+  if (shift.status === "cancelled") return { error: "Award was cancelled", status: 400 };
+  const wasOpen = shift.status === "open";
+  const now = Date.now();
+  if (shift.status === "open") {
+    shift.status = "closed";
+    shift.closesAt = Math.min(shift.closesAt, now);
+  }
+  shift.resendPending = false;
+
+  let round = Number(shift.fillRound) || 1;
+  if (round < 1) round = 1;
+  if (round > 3) round = 3;
+  const interests = data.interests.filter((i) => i.shiftId === String(shift.id));
+  const proposal = proposalFor(data, shift, round);
+
+  if (!proposal.length && round === 2 && wasOpen) {
+    return { error: "Nobody new for the open days yet. Close the window when you want to move on.", status: 400 };
+  }
+  if (!proposal.length && round === 1) {
+    return { error: interests.length ? "No open day matches these requests" : "No interested officers", status: 400 };
+  }
+  if (!proposal.length && round === 2 && unfilledDayNumbers(shift).length) {
+    shift.fillRound = 3;
+    shift.status = "closed";
+    write(data);
+    return { shift: getShift(shift.id), awardedNow: [], advancedTo: 3, multi: true, roster: getRoster(), winner: null, award: null };
+  }
+  if (!proposal.length) {
+    finalizeMulti(shift);
+    write(data);
+    return { shift: getShift(shift.id), awardedNow: [], multi: true, roster: getRoster(), winner: null, award: null };
+  }
+
+  const startOrder = rosterSorted(data).map((o) => o.badge);
+  const seen = new Set();
+  const winnerBadges = [];
+  proposal.forEach((p) => {
+    if (seen.has(p.badge)) return;
+    seen.add(p.badge);
+    winnerBadges.push(p.badge);
+  });
+  winnerBadges.sort((a, b) => startOrder.indexOf(a) - startOrder.indexOf(b));
+  const snapshots = applyRotationMoves(data, winnerBadges);
+  const snapByBadge = {};
+  snapshots.forEach((s) => { snapByBadge[s.badge] = s; });
+
+  if (!shift.assignments || typeof shift.assignments !== "object") shift.assignments = {};
+  if (!Array.isArray(data.awards)) data.awards = [];
+  if (data.nextAwardId == null) data.nextAwardId = 1;
+
+  const byBadge = new Map();
+  proposal.forEach((p) => {
+    if (!byBadge.has(p.badge)) byBadge.set(p.badge, []);
+    byBadge.get(p.badge).push(p.day);
+  });
+
+  const awards = [];
+  winnerBadges.forEach((badge) => {
+    const snap = snapByBadge[badge];
+    if (!snap) return;
+    const daysWon = byBadge.get(badge) || [];
+    const dayDates = {};
+    daysWon.forEach((d) => {
+      const meta = shift.days.find((x) => x.n === d);
+      dayDates[String(d)] = meta && meta.date ? meta.date : "";
+    });
+    const awardId = String(data.nextAwardId++);
+    const award = {
+      id: awardId,
+      shiftId: String(shift.id),
+      badge,
+      name: snap.name,
+      awardedAt: now,
+      priorOrder: snap.priorOrder,
+      priorLastAward: snap.priorLastAward,
+      rotationMove: true,
+      status: "active",
+      cancelledAt: null,
+      restored: false,
+      days: daysWon.slice(),
+      cancelledDays: [],
+      round,
+      dayDates,
+    };
+    data.awards.push(award);
+    awards.push(award);
+    daysWon.forEach((d) => {
+      shift.assignments[String(d)] = {
+        badge,
+        name: snap.name,
+        awardId,
+        round,
+        at: now,
+      };
+    });
+  });
+
+  const unfilled = unfilledDayNumbers(shift);
+  if (round === 1 && unfilled.length && canOfferSecondRequest(shift)) {
+    openSecondRequest(shift, now);
+  } else if (round === 2 && unfilled.length) {
+    shift.fillRound = 3;
+    shift.status = "closed";
+    shift.resendPending = false;
+  } else {
+    finalizeMulti(shift);
+  }
+
+  write(data);
+  return {
+    shift: getShift(shift.id),
+    winner: null,
+    award: awards[0] || null,
+    awards,
+    awardedNow: proposal,
+    multi: true,
+    roster: getRoster(),
   };
 }
 
@@ -390,6 +746,7 @@ function confirmAward(shiftId) {
   const data = read();
   const shift = data.shifts.find((s) => s.id === String(shiftId));
   if (!shift) return { error: "Shift not found", status: 404 };
+  if (isMultiDay(shift)) return confirmMultiDay(data, shift);
   if (shift.status === "awarded") return { error: "Already awarded", status: 400 };
   if (shift.status === "cancelled") return { error: "Award was cancelled", status: 400 };
   if (shift.status === "open") {
@@ -474,6 +831,7 @@ function awardRestoreInfo(award, now) {
 function hasNewerActiveAward(data, award) {
   return (data.awards || []).some((a) => {
     if (a.badge !== award.badge || a.id === award.id || a.status !== "active") return false;
+    if (a.rotationMove === false) return false;
     if (a.awardedAt > award.awardedAt) return true;
     // Same ms (fast successive awards): treat higher award id as newer
     if (a.awardedAt === award.awardedAt && Number(a.id) > Number(award.id)) return true;
@@ -481,10 +839,100 @@ function hasNewerActiveAward(data, award) {
   });
 }
 
-function cancelAward(shiftId) {
+function restoreOfficer(data, award) {
+  const sorted = rosterSorted(data);
+  const curIdx = sorted.findIndex((o) => o.badge === award.badge);
+  if (curIdx < 0) return { error: "Officer no longer on roster", status: 400 };
+  const [officer] = sorted.splice(curIdx, 1);
+  officer.lastAward = award.priorLastAward;
+  const insertAt = Math.max(0, Math.min(Number(award.priorOrder), sorted.length));
+  sorted.splice(insertAt, 0, officer);
+  sorted.forEach((o, i) => { o.order = i; });
+  data.roster = sorted;
+  return { officer, insertAt };
+}
+
+function cancelMultiDay(data, shift, opts) {
+  opts = opts || {};
+  if (shift.status === "cancelled") return { error: "Award was cancelled", status: 400 };
+  let day = Number(opts.day);
+  const awards = data.awards || [];
+  let award = null;
+  if (Number.isInteger(day) && day > 0) {
+    award = awards.find((a) =>
+      String(a.shiftId) === String(shift.id) &&
+      a.status === "active" &&
+      Array.isArray(a.days) &&
+      a.days.some((d) => Number(d) === day)
+    );
+  } else if (opts.awardId) {
+    const found = awards.find((a) => a.id === String(opts.awardId) && String(a.shiftId) === String(shift.id) && a.status === "active");
+    if (found && Array.isArray(found.days) && found.days.length === 1) {
+      award = found;
+      day = Number(found.days[0]);
+    }
+  }
+  const slot = shift.assignments && shift.assignments[String(day)];
+  if (!award || !slot || String(slot.badge) !== String(award.badge)) {
+    return { error: Number.isInteger(day) && day > 0 ? "That day is not awarded" : "Say which day to cancel", status: 400 };
+  }
+
+  const info = awardRestoreInfo(award);
+  if (!info.canRestore) return { error: info.reason, status: 400, award };
+
+  const willEmpty = award.days.length === 1;
+  if (willEmpty && award.rotationMove !== false && hasNewerActiveAward(data, award)) {
+    return {
+      error:
+        "Cannot restore — #" +
+        award.badge +
+        " " +
+        award.name +
+        " has a newer active award that already moved them on the list. Cancel the newer award first, or leave them where they are.",
+      status: 409,
+      award,
+    };
+  }
+  if (willEmpty && award.rotationMove !== false && award.priorOrder == null) {
+    return { error: "Cannot restore — this award has no saved prior list position.", status: 400 };
+  }
+
+  award.days = award.days.filter((d) => Number(d) !== day);
+  award.cancelledDays = (award.cancelledDays || []).concat([day]);
+  delete shift.assignments[String(day)];
+
+  let restored = null;
+  if (award.days.length === 0) {
+    if (award.rotationMove !== false) {
+      const back = restoreOfficer(data, award);
+      if (back.error) return back;
+      restored = {
+        badge: back.officer.badge,
+        name: back.officer.name,
+        order: back.insertAt,
+        lastAward: back.officer.lastAward,
+      };
+    }
+    award.status = "cancelled";
+    award.cancelledAt = Date.now();
+    award.restored = !!restored;
+  }
+
+  const anyLeft = shift.assignments && Object.keys(shift.assignments).some((k) => shift.assignments[k] && shift.assignments[k].badge);
+  if (!anyLeft && shift.status !== "open") {
+    shift.status = "cancelled";
+    shift.cancelledAt = Date.now();
+  }
+
+  write(data);
+  return { shift: getShift(shift.id), award, restored, roster: getRoster() };
+}
+
+function cancelAward(shiftId, opts) {
   const data = read();
   const shift = data.shifts.find((s) => s.id === String(shiftId));
   if (!shift) return { error: "Shift not found", status: 404 };
+  if (isMultiDay(shift)) return cancelMultiDay(data, shift, opts || {});
   if (shift.status !== "awarded") {
     return { error: "Shift is not awarded (status: " + shift.status + ")", status: 400 };
   }
