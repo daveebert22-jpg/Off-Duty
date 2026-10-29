@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: tfpd-off-duty
+    runtime: node
+    plan: free
+    buildCommand: "true"
+    startCommand: node server.js
+    healthCheckPath: /login
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NODE_ENV
+        value: production
+      - key: OD_SECURE
+        value: "1"

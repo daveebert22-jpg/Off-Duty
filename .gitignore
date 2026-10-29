@@ -1,0 +1,5 @@
+node_modules/
+_chunk*
+_w.py
+*.tgz
+.env

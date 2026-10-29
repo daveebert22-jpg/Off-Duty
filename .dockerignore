@@ -1,0 +1,5 @@
+_chunk*
+_w.py
+*.tgz
+node_modules
+.git

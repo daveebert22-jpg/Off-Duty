@@ -1,0 +1,15 @@
+{
+  "name": "off-duty-app",
+  "version": "1.0.0",
+  "description": "Tinton Falls PD Off Duty shift filler",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node scripts/http-proof.js && node scripts/verify.js && node scripts/cancel-proof.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
