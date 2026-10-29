@@ -62,7 +62,53 @@ function getRoster() {
   return read().roster.slice().sort((a, b) => a.order - b.order);
 }
 
-function createShift({ title, location, whenText, notes, windowMinutes }) {
+function isIsoDate(raw) {
+  const s = String(raw || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+function normalizeWhenDate(raw) {
+  const s = String(raw || "").trim();
+  return isIsoDate(s) ? s : "";
+}
+
+// Sunday that starts the America/New_York calendar week containing this shift date.
+// whenDate is the job's calendar day (not the moment someone tapped).
+function weekStartKey(isoDate) {
+  if (!isIsoDate(isoDate)) return "";
+  const [y, m, d] = String(isoDate).split("-").map(Number);
+  const utc = new Date(Date.UTC(y, m - 1, d));
+  const sunday = new Date(utc);
+  sunday.setUTCDate(utc.getUTCDate() - utc.getUTCDay());
+  const sm = String(sunday.getUTCMonth() + 1).padStart(2, "0");
+  const sd = String(sunday.getUTCDate()).padStart(2, "0");
+  return sunday.getUTCFullYear() + "-" + sm + "-" + sd;
+}
+
+function sameWeekAwards(badge, whenDate) {
+  const key = weekStartKey(whenDate);
+  if (!key) return [];
+  const data = read();
+  const out = [];
+  (data.awards || []).forEach((a) => {
+    if (String(a.badge) !== String(badge) || a.status !== "active") return;
+    const shift = data.shifts.find((s) => s.id === a.shiftId);
+    if (!shift || shift.status !== "awarded") return;
+    if (weekStartKey(shift.whenDate) !== key) return;
+    out.push({
+      shiftId: shift.id,
+      title: shift.title || "Off Duty",
+      whenText: shift.whenText || "",
+      whenDate: shift.whenDate || "",
+    });
+  });
+  return out;
+}
+
+function createShift({ title, location, whenText, whenDate, notes, windowMinutes }) {
   const data = read();
   const id = String(data.nextShiftId++);
   const now = Date.now();
@@ -72,6 +118,7 @@ function createShift({ title, location, whenText, notes, windowMinutes }) {
     title: title || "Off Duty",
     location: location || "",
     whenText: whenText || "",
+    whenDate: normalizeWhenDate(whenDate),
     notes: notes || "",
     windowMinutes: mins,
     createdAt: now,
@@ -207,7 +254,7 @@ function addInterest(shiftId, badge) {
   };
   data.interests.push(interest);
   write(data);
-  return { interest };
+  return { interest, sameWeek: sameWeekAwards(officer.badge, shift.whenDate) };
 }
 
 function removeInterest(shiftId, badge) {
@@ -512,6 +559,9 @@ module.exports = {
   getInterests,
   addInterest,
   removeInterest,
+  isIsoDate,
+  weekStartKey,
+  sameWeekAwards,
   rollInterestWindow,
   rollExpiredShifts,
   takePendingResends,
