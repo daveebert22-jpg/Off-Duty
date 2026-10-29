@@ -172,6 +172,15 @@ async function maybeWeekWarningSms(shiftId, interest, sameWeek) {
   }
 }
 
+function interestRanks(body) {
+  if (!body) return undefined;
+  if (Array.isArray(body.ranks)) return body.ranks;
+  if (body.ranks != null && String(body.ranks).trim() !== "") return body.ranks;
+  if (Array.isArray(body.days)) return body.days;
+  if (body.days != null && String(body.days).trim() !== "") return body.days;
+  return undefined;
+}
+
 function wantsJson(req) {
   const accept = req.headers.accept || "";
   const ct = req.headers["content-type"] || "";
@@ -273,21 +282,22 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && m) {
       await prepareShift(m[1], req);
       const body = await readBody(req);
-      const r = db.addInterest(m[1], body.badge);
+      const r = db.addInterest(m[1], body.badge, interestRanks(body));
       if (r.error) {
         return send(res, r.status || 400, views.layout("Interest",
           "<section class=\"card\"><p>" + views.esc(r.error) + "</p><p><a href=\"/s/" + views.esc(m[1]) + "\">Back</a></p></section>"));
       }
-      await maybeWeekWarningSms(m[1], r.interest, r.sameWeek);
-      return send(res, 200, views.thanksPage(r.interest, m[1], r.sameWeek));
+      if (!r.updated) await maybeWeekWarningSms(m[1], r.interest, r.sameWeek);
+      return send(res, 200, views.thanksPage(r.interest, m[1], r.sameWeek, { updated: !!r.updated }));
     }
     m = p.match(/^\/api\/shifts\/([^/]+)\/interest$/);
     if (req.method === "POST" && m) {
       await prepareShift(m[1], req);
-      const r = db.addInterest(m[1], (await readBody(req)).badge);
+      const body = await readBody(req);
+      const r = db.addInterest(m[1], body.badge, interestRanks(body));
       if (r.error) return send(res, r.status || 400, { error: r.error });
-      await maybeWeekWarningSms(m[1], r.interest, r.sameWeek);
-      return send(res, 201, Object.assign({}, r.interest, { sameWeek: r.sameWeek || [] }));
+      if (!r.updated) await maybeWeekWarningSms(m[1], r.interest, r.sameWeek);
+      return send(res, r.updated ? 200 : 201, Object.assign({}, r.interest, { sameWeek: r.sameWeek || [], updated: !!r.updated }));
     }
     m = p.match(/^\/s\/([^/]+)\/withdraw$/);
     if (req.method === "POST" && m) {
@@ -351,13 +361,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && m) {
       const r = db.confirmAward(m[1]);
       if (r.error) return send(res, r.status || 400, views.layout("Error", "<p>" + views.esc(r.error) + "</p>", "/admin/shift/" + m[1]));
-      await announceAward(r.shift);
+      if (!r.multi || (r.awardedNow && r.awardedNow.length)) await announceAward(r.shift);
+      await flushResendTexts(req);
       return redirect(res, "/admin/shift/" + m[1]);
     }
 
     m = p.match(/^\/admin\/shift\/([^/]+)\/cancel$/);
     if (req.method === "POST" && m) {
-      const r = db.cancelAward(m[1]);
+      const body = await readBody(req);
+      const r = db.cancelAward(m[1], { day: body.day, awardId: body.awardId, badge: body.badge });
       if (r.error) {
         return send(res, r.status || 400, views.layout("Cancel award",
           "<section class=\"card\"><p>" + views.esc(r.error) + "</p>" +
@@ -386,13 +398,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && m) {
       const r = db.confirmAward(m[1]);
       if (r.error) return send(res, r.status || 400, { error: r.error });
-      const awardSms = await announceAward(r.shift);
+      let awardSms = null;
+      if (!r.multi || (r.awardedNow && r.awardedNow.length)) awardSms = await announceAward(r.shift);
+      await flushResendTexts(req);
       return send(res, 200, Object.assign({}, r, { awardSms }));
     }
 
     m = p.match(/^\/api\/shifts\/([^/]+)\/cancel$/);
     if (req.method === "POST" && m) {
-      const r = db.cancelAward(m[1]);
+      const body = await readBody(req);
+      const r = db.cancelAward(m[1], { day: body.day, awardId: body.awardId, badge: body.badge });
       if (r.error) return send(res, r.status || 400, { error: r.error });
       return send(res, 200, r);
     }
