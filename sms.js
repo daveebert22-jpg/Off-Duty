@@ -21,18 +21,59 @@ function twilioConfig() {
   };
 }
 
-function messageFor(shift, base) {
+function shiftDetail(shift) {
+  const title = String((shift && shift.title) || "Off Duty").replace(/\s+/g, " ").trim() || "Off Duty";
+  const when = String((shift && shift.whenText) || "").replace(/\s+/g, " ").trim();
+  return { title, when, detail: when ? title + " — " + when : title };
+}
+
+function interestUrl(shift, base) {
   const root = String(base || "").replace(/\/$/, "");
-  const url = root + "/s/" + shift.id;
-  const title = String(shift.title || "Off Duty").replace(/\s+/g, " ").trim() || "Off Duty";
-  const when = String(shift.whenText || "").replace(/\s+/g, " ").trim();
-  const detail = when ? title + " — " + when : title;
-  let body = "TFPD Off Duty: " + detail + ". Tap to show interest: " + url;
-  if (body.length > 300) {
-    body = "TFPD Off Duty: " + title.slice(0, 80) + ". Tap to show interest: " + url;
-  }
+  return root + "/s/" + shift.id;
+}
+
+function messageFor(shift, base) {
+  const d = shiftDetail(shift);
+  const url = interestUrl(shift, base);
+  let body = "TFPD Off Duty: " + d.detail + ". Tap to show interest: " + url;
+  if (body.length > 300) body = "TFPD Off Duty: " + d.title.slice(0, 80) + ". Tap to show interest: " + url;
   return body;
 }
+
+function messageAwarded(shift) {
+  const d = shiftDetail(shift);
+  const name = String((shift && shift.winnerName) || "an officer").replace(/\s+/g, " ").trim();
+  const badge = String((shift && shift.winnerBadge) || "").replace(/\s+/g, " ").trim();
+  let body = "TFPD Off Duty: " + d.detail + " filled by " + name + " (badge #" + badge + ").";
+  if (body.length > 300) body = "TFPD Off Duty: " + d.title.slice(0, 80) + " filled by " + name + " (badge #" + badge + ").";
+  return body;
+}
+
+function messageStillOpen(shift, base) {
+  const d = shiftDetail(shift);
+  const url = interestUrl(shift, base);
+  let body = "TFPD Off Duty: " + d.detail + " still open. Tap to show interest: " + url;
+  if (body.length > 300) body = "TFPD Off Duty: " + d.title.slice(0, 80) + " still open. Tap to show interest: " + url;
+  return body;
+}
+
+const PURPOSE = {
+  create: {
+    missing: MISSING,
+    badFrom: "Texts were not sent (TWILIO_FROM_NUMBER must be E.164, e.g. +15551234567). The shift was still created.",
+    noClient: "Texts were not sent (SMS client unavailable). The shift was still created.",
+  },
+  award: {
+    missing: "Texts were not sent (Twilio config missing). The award was saved.",
+    badFrom: "Texts were not sent (TWILIO_FROM_NUMBER must be E.164, e.g. +15551234567). The award was saved.",
+    noClient: "Texts were not sent (SMS client unavailable). The award was saved.",
+  },
+  resend: {
+    missing: "Texts were not sent (Twilio config missing). The shift is still open.",
+    badFrom: "Texts were not sent (TWILIO_FROM_NUMBER must be E.164, e.g. +15551234567). The shift is still open.",
+    noClient: "Texts were not sent (SMS client unavailable). The shift is still open.",
+  },
+};
 
 function briefError(err) {
   let s = String((err && err.message) || err || "send failed");
@@ -79,8 +120,9 @@ async function eachLimited(items, limit, fn) {
   await Promise.all(Array.from({ length: workers }, () => worker()));
 }
 
-async function notifyShift(shift, base, opts) {
+async function deliver(text, opts, purpose) {
   opts = opts || {};
+  const notes = PURPOSE[purpose] || PURPOSE.create;
   const cfg = twilioConfig();
   const roster = db.getRoster();
   let skipped = 0;
@@ -96,7 +138,7 @@ async function notifyShift(shift, base, opts) {
       sent: 0,
       failed: 0,
       skipped,
-      note: MISSING,
+      note: notes.missing,
       failures: [],
     };
   }
@@ -122,7 +164,7 @@ async function notifyShift(shift, base, opts) {
       sent: 0,
       failed: failures.length,
       skipped,
-      note: "Texts were not sent (TWILIO_FROM_NUMBER must be E.164, e.g. +15551234567). The shift was still created.",
+      note: notes.badFrom,
       failures,
     };
   }
@@ -137,12 +179,11 @@ async function notifyShift(shift, base, opts) {
       sent: 0,
       failed: failures.length,
       skipped,
-      note: "Texts were not sent (SMS client unavailable). The shift was still created.",
+      note: notes.noClient,
       failures,
     };
   }
 
-  const text = messageFor(shift, base);
   const sending = Object.assign({}, cfg, { from });
   let sent = 0;
   await eachLimited(targets, 5, async (t) => {
@@ -154,21 +195,36 @@ async function notifyShift(shift, base, opts) {
     }
   });
 
-  const failed = failures.length;
   return {
     configured: true,
     sent,
-    failed,
+    failed: failures.length,
     skipped,
-    note: "Texts: " + sent + " sent, " + failed + " failed, " + skipped + " skipped (no phone).",
+    note: "Texts: " + sent + " sent, " + failures.length + " failed, " + skipped + " skipped (no phone).",
     failures,
   };
+}
+
+async function notifyShift(shift, base, opts) {
+  return deliver(messageFor(shift, base), opts, "create");
+}
+
+async function notifyAwarded(shift, opts) {
+  return deliver(messageAwarded(shift), opts, "award");
+}
+
+async function notifyStillOpen(shift, base, opts) {
+  return deliver(messageStillOpen(shift, base), opts, "resend");
 }
 
 module.exports = {
   twilioConfigured,
   twilioConfig,
   messageFor,
+  messageAwarded,
+  messageStillOpen,
   notifyShift,
+  notifyAwarded,
+  notifyStillOpen,
   MISSING,
 };
