@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const seedRoster = require("./roster");
+const { normalizePhone } = require("./util2");
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DB_PATH = path.join(DATA_DIR, "store.json");
@@ -124,6 +125,72 @@ function addInterest(shiftId, badge) {
   data.interests.push(interest);
   write(data);
   return { interest };
+}
+
+function removeInterest(shiftId, badge) {
+  const data = read();
+  const shift = data.shifts.find((s) => s.id === String(shiftId));
+  if (!shift) return { error: "Shift not found", status: 404 };
+  const tooLate = "Too late — the interest window is closed, so interest can no longer be withdrawn.";
+  if (shift.status !== "open") return { error: tooLate, status: 400 };
+  if (Date.now() > shift.closesAt) {
+    shift.status = "closed";
+    write(data);
+    return { error: tooLate, status: 400 };
+  }
+  if (badge == null || String(badge).trim() === "") return { error: "Badge required", status: 400 };
+  const officer = data.roster.find((o) => o.badge === String(badge));
+  if (!officer) return { error: "Unknown badge", status: 400 };
+  const removed = data.interests.filter(
+    (i) => i.shiftId === String(shiftId) && i.badge === String(badge)
+  );
+  if (!removed.length) return { error: "You are not marked interested on this shift", status: 400 };
+  data.interests = data.interests.filter(
+    (i) => !(i.shiftId === String(shiftId) && i.badge === String(badge))
+  );
+  write(data);
+  return { interest: removed[0], shift };
+}
+
+function setOfficerPhone(badge, phone) {
+  const data = read();
+  const officer = data.roster.find((o) => o.badge === String(badge));
+  if (!officer) return { error: "Unknown badge", status: 404 };
+  const raw = phone == null ? "" : String(phone).trim();
+  if (!raw) {
+    officer.phone = "";
+    write(data);
+    return { officer: { badge: officer.badge, name: officer.name, phone: "" } };
+  }
+  const normalized = normalizePhone(raw);
+  if (!normalized) {
+    return { error: "Enter a 10-digit US number or E.164 (+1…)", status: 400 };
+  }
+  officer.phone = normalized;
+  write(data);
+  return { officer: { badge: officer.badge, name: officer.name, phone: officer.phone } };
+}
+
+function recordSmsSummary(shiftId, summary) {
+  const data = read();
+  const shift = data.shifts.find((s) => s.id === String(shiftId));
+  if (!shift) return { error: "Shift not found", status: 404 };
+  summary = summary || {};
+  const failures = Array.isArray(summary.failures) ? summary.failures : [];
+  shift.sms = {
+    configured: !!summary.configured,
+    sent: Number(summary.sent) || 0,
+    failed: Number(summary.failed) || 0,
+    skipped: Number(summary.skipped) || 0,
+    note: String(summary.note || "").slice(0, 300),
+    failures: failures.slice(0, 8).map((f) => ({
+      badge: String((f && f.badge) || ""),
+      name: String((f && f.name) || ""),
+      error: String((f && f.error) || "").slice(0, 160),
+    })),
+  };
+  write(data);
+  return { sms: shift.sms };
 }
 
 function closeShift(shiftId) {
@@ -366,6 +433,9 @@ module.exports = {
   listShifts,
   getInterests,
   addInterest,
+  removeInterest,
+  setOfficerPhone,
+  recordSmsSummary,
   closeShift,
   suggestWinner,
   confirmAward,

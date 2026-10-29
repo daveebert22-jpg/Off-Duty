@@ -5,6 +5,7 @@ const { URL } = require("url");
 const db = require("./db");
 const views = require("./lib/views");
 const util2 = require("./util2");
+const sms = require("./sms");
 
 const PORT = Number(process.env.PORT) || 3847;
 const PUBLIC = path.join(__dirname, "public");
@@ -39,9 +40,35 @@ function readBody(req) {
 }
 
 function baseUrl(req) {
-  const host = req.headers["x-forwarded-host"] || req.headers.host || ("localhost:" + PORT);
-  const proto = req.headers["x-forwarded-proto"] || "http";
+  const env = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "").trim().replace(/\/$/, "");
+  if (env) return env;
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || ("localhost:" + PORT)).split(",")[0].trim();
+  const proto = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
   return proto + "://" + host;
+}
+
+async function announceShift(shift, req) {
+  let summary;
+  try {
+    summary = await sms.notifyShift(shift, baseUrl(req));
+  } catch (err) {
+    console.error("SMS notify failed", err && err.message);
+    summary = {
+      configured: sms.twilioConfigured(),
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      note: "Texts were not sent (unexpected error). The shift was still created.",
+      failures: [],
+    };
+  }
+  try {
+    db.recordSmsSummary(shift.id, summary);
+  } catch (err) {
+    console.error("SMS summary save failed", err && err.message);
+  }
+  console.log("SMS shift " + shift.id + ": " + summary.note);
+  return summary;
 }
 
 function wantsJson(req) {
@@ -164,11 +191,29 @@ const server = http.createServer(async (req, res) => {
       if (r.error) return send(res, r.status || 400, { error: r.error });
       return send(res, 201, r.interest);
     }
+    m = p.match(/^\/s\/([^/]+)\/withdraw$/);
+    if (req.method === "POST" && m) {
+      const body = await readBody(req);
+      const r = db.removeInterest(m[1], body.badge);
+      if (r.error) {
+        return send(res, r.status || 400, views.layout("Withdraw",
+          "<section class=\"card\"><p class=\"banner\">" + views.esc(r.error) + "</p>" +
+          "<p><a class=\"btn\" href=\"/s/" + views.esc(m[1]) + "\">Back to shift</a></p></section>"));
+      }
+      return send(res, 200, views.withdrawnPage(r.interest, m[1]));
+    }
+    m = p.match(/^\/api\/shifts\/([^/]+)\/withdraw$/);
+    if (req.method === "POST" && m) {
+      const r = db.removeInterest(m[1], (await readBody(req)).badge);
+      if (r.error) return send(res, r.status || 400, { error: r.error });
+      return send(res, 200, { interest: r.interest });
+    }
 
     // Everything below requires admin
     const adminPaths =
       p === "/" || p === "/admin" || p.startsWith("/admin/") ||
-      p === "/api/roster" || p === "/api/awards" || p === "/api/shifts" ||
+      p === "/api/roster" || p.startsWith("/api/roster/") ||
+      p === "/api/awards" || p === "/api/shifts" ||
       /^\/api\/shifts\//.test(p);
     if (adminPaths && !requireAdmin(req, res)) return;
 
@@ -179,12 +224,13 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(303, { Location: "/setup" });
         return res.end();
       }
-      return send(res, 200, views.adminHome());
+      return send(res, 200, views.adminHome({ savedBadge: url.searchParams.get("phone") }));
     }
 
     if (req.method === "POST" && p === "/admin/shifts") {
       const body = await readBody(req);
       const shift = db.createShift(body);
+      await announceShift(shift, req);
       res.writeHead(303, { Location: "/admin/shift/" + shift.id });
       return res.end();
     }
@@ -226,7 +272,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && p === "/api/shifts") {
-      return send(res, 201, db.createShift(await readBody(req)));
+      const shift = db.createShift(await readBody(req));
+      const summary = await announceShift(shift, req);
+      const saved = db.getShift(shift.id) || shift;
+      return send(res, 201, Object.assign({}, saved, { sms: saved.sms || summary }));
     }
 
     m = p.match(/^\/api\/shifts\/([^/]+)\/close$/);
@@ -261,6 +310,25 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, info);
     }
 
+    m = p.match(/^\/admin\/roster\/([^/]+)\/phone$/);
+    if (req.method === "POST" && m) {
+      const body = await readBody(req);
+      const r = db.setOfficerPhone(decodeURIComponent(m[1]), body.phone);
+      if (r.error) {
+        return send(res, r.status || 400, views.adminHome({ error: r.error }));
+      }
+      res.writeHead(303, { Location: "/?phone=" + encodeURIComponent(r.officer.badge) + "#b-" + encodeURIComponent(r.officer.badge) });
+      return res.end();
+    }
+
+    m = p.match(/^\/api\/roster\/([^/]+)\/phone$/);
+    if (req.method === "POST" && m) {
+      const body = await readBody(req);
+      const r = db.setOfficerPhone(decodeURIComponent(m[1]), body.phone);
+      if (r.error) return send(res, r.status || 400, { error: r.error });
+      return send(res, 200, r.officer);
+    }
+
     send(res, 404, views.layout("Not found", "<p>Not found</p>"));
   } catch (err) {
     console.error(err);
@@ -270,7 +338,7 @@ const server = http.createServer(async (req, res) => {
 
 if (require.main === module) {
   db.getRoster();
-  server.listen(PORT, () => console.log("TFPD Off Duty on http://localhost:" + PORT));
+  server.listen(PORT, "0.0.0.0", () => console.log("TFPD Off Duty on http://0.0.0.0:" + PORT));
 }
 
 module.exports = { server, PORT };

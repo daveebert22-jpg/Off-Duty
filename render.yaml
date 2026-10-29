@@ -13,3 +13,11 @@ services:
         value: production
       - key: OD_SECURE
         value: "1"
+      # Secrets: set the values in the Dashboard (Environment). Do not commit them.
+      # sync: false prompts only when this Blueprint first creates the service.
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
