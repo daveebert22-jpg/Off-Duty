@@ -134,6 +134,18 @@ async function prepareShift(shiftId, req) {
   await flushResendTexts(req);
 }
 
+async function maybeWeekWarningSms(shiftId, interest, sameWeek) {
+  if (!interest || !sameWeek || !sameWeek.length) return { sent: false, reason: "none" };
+  try {
+    const result = await sms.notifySameWeek(db.getShift(shiftId), interest, sameWeek);
+    if (result && result.sent) console.log("SMS same-week shift " + shiftId + " badge " + interest.badge);
+    return result || { sent: false };
+  } catch (err) {
+    console.error("same-week SMS", err && err.message);
+    return { sent: false, reason: "error" };
+  }
+}
+
 function wantsJson(req) {
   const accept = req.headers.accept || "";
   const ct = req.headers["content-type"] || "";
@@ -248,14 +260,16 @@ const server = http.createServer(async (req, res) => {
         return send(res, r.status || 400, views.layout("Interest",
           "<section class=\"card\"><p>" + views.esc(r.error) + "</p><p><a href=\"/s/" + views.esc(m[1]) + "\">Back</a></p></section>"));
       }
-      return send(res, 200, views.thanksPage(r.interest, m[1]));
+      await maybeWeekWarningSms(m[1], r.interest, r.sameWeek);
+      return send(res, 200, views.thanksPage(r.interest, m[1], r.sameWeek));
     }
     m = p.match(/^\/api\/shifts\/([^/]+)\/interest$/);
     if (req.method === "POST" && m) {
       await prepareShift(m[1], req);
       const r = db.addInterest(m[1], (await readBody(req)).badge);
       if (r.error) return send(res, r.status || 400, { error: r.error });
-      return send(res, 201, r.interest);
+      await maybeWeekWarningSms(m[1], r.interest, r.sameWeek);
+      return send(res, 201, Object.assign({}, r.interest, { sameWeek: r.sameWeek || [] }));
     }
     m = p.match(/^\/s\/([^/]+)\/withdraw$/);
     if (req.method === "POST" && m) {

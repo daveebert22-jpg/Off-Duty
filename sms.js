@@ -217,6 +217,44 @@ async function notifyStillOpen(shift, base, opts) {
   return deliver(messageStillOpen(shift, base), opts, "resend");
 }
 
+function messageSameWeek(shift, jobs) {
+  const d = shiftDetail(shift);
+  const label = (j) => {
+    const when = [j.whenText, j.whenDate].filter(Boolean).join(" ");
+    const title = String(j.title || "Off Duty").replace(/\s+/g, " ").trim();
+    return when ? title + " (" + when.replace(/\s+/g, " ").trim() + ")" : title;
+  };
+  const first = label(jobs[0] || {});
+  const more = jobs.length > 1 ? " +" + (jobs.length - 1) + " more" : "";
+  let body = "TFPD Off Duty: You already have " + first + more +
+    " this week. You can still take " + d.detail + ", or leave it for someone else.";
+  if (body.length > 300) {
+    body = "TFPD Off Duty: You already have " + first.slice(0, 80) +
+      " this week. You can still take " + d.title.slice(0, 40) + ", or leave it for someone else.";
+  }
+  return body;
+}
+
+// One text to the officer who just tapped in. Never the whole roster.
+async function notifySameWeek(shift, interest, jobs, opts) {
+  opts = opts || {};
+  if (!jobs || !jobs.length || !interest) return { sent: false, reason: "none" };
+  if (!twilioConfigured()) return { sent: false, reason: "config" };
+  const from = normalizePhone(twilioConfig().from);
+  if (!from) return { sent: false, reason: "from" };
+  const officer = db.getRoster().find((o) => o.badge === String(interest.badge));
+  const phone = normalizePhone(officer && officer.phone);
+  if (!phone) return { sent: false, reason: "nophone" };
+  const fetchImpl = opts.fetch || globalThis.fetch;
+  if (typeof fetchImpl !== "function") return { sent: false, reason: "noclient" };
+  try {
+    await sendOne(Object.assign({}, twilioConfig(), { from }), phone, messageSameWeek(shift, jobs), fetchImpl);
+    return { sent: true, reason: "sent" };
+  } catch (err) {
+    return { sent: false, reason: "failed" };
+  }
+}
+
 module.exports = {
   twilioConfigured,
   twilioConfig,
@@ -226,5 +264,7 @@ module.exports = {
   notifyShift,
   notifyAwarded,
   notifyStillOpen,
+  messageSameWeek,
+  notifySameWeek,
   MISSING,
 };

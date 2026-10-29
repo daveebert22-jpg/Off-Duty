@@ -51,4 +51,6 @@ a{color:#93c5fd}
 .withdraw h2{font-size:1.15rem}
 .sms-ok{background:#14532d;color:#bbf7d0;padding:10px 12px;border-radius:10px}
 .sms-note{display:grid;gap:8px;margin:10px 0}
+.week-warn{margin:12px 0}
+.week-warn .list{margin:8px 0 8px 1.1rem}
 .btn.danger.big{width:100%}

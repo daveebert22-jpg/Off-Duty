@@ -6,7 +6,7 @@ Phone-friendly Off Duty interest + rotation award for Tinton Falls PD.
 
 1. Admin logs in, posts a shift (default 20-minute interest window).
 2. Officers who have a phone on file are texted the interest link. The shareable link can still be copied.
-3. Officers open /s/:id, pick badge/name, tap Interested (no rotation standings shown). They can withdraw before the window closes and before the shift is awarded.
+3. Officers open /s/:id, pick badge/name, tap Interested (no rotation standings shown). They can withdraw before the window closes and before the shift is awarded. If they already have an awarded job the same Sunday–Saturday week, the confirmation page reminds them and still keeps the interest.
 4. After the window (or Close now), if anyone is interested, suggest the officer highest on the rotation (top = waiting longest).
 5. If the window ends with nobody interested, the shift stays open: a new interest window starts and officers with a phone are texted that it is still open. That repeats up to `SMS_UNFILLED_RESEND_MAX` times (default **1**). Then the shift closes unfilled. Close now does not resend.
 6. Confirm award texts everyone with a phone that the job was filled and who got it, then moves the winner to the bottom of the rotation (saves prior spot).
@@ -50,6 +50,14 @@ When the interest clock runs out and nobody has tapped in, the shift does not cl
 - `SMS_UNFILLED_RESEND_MINUTES` — length of each restarted window. Default is that shift's own interest window (20 minutes unless the admin chose another length).
 
 The server checks about every 30 seconds, and also when someone opens the shift. A manual **Close window now** leaves the shift closed and does not send the still-open text. Missing Twilio config skips the text and leaves the new window open.
+
+### Same week reminder
+
+Set **Shift date** when posting. That date is the job's calendar day in America/New_York. A week is Sunday through Saturday of that date, not the moment someone taps Interested.
+
+If an officer taps in and already has an active award whose shift date is in that same week, the confirmation page names those jobs (title and when only) and says they may want to leave room for others. Interest is still saved. A cancelled award does not count. Shifts with no date are skipped, because the week cannot be known.
+
+If that officer has a phone and Twilio is configured, they also get one short text for that tap. It is not sent to the rest of the roster.
 
 ## Start
 
