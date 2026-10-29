@@ -47,6 +47,12 @@ function baseUrl(req) {
   return proto + "://" + host;
 }
 
+function fallbackBase() {
+  const env = String(process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "").trim().replace(/\/$/, "");
+  if (env) return env;
+  return "http://localhost:" + PORT;
+}
+
 async function announceShift(shift, req) {
   let summary;
   try {
@@ -63,12 +69,69 @@ async function announceShift(shift, req) {
     };
   }
   try {
-    db.recordSmsSummary(shift.id, summary);
+    db.recordSmsSummary(shift.id, summary, "sms");
   } catch (err) {
     console.error("SMS summary save failed", err && err.message);
   }
   console.log("SMS shift " + shift.id + ": " + summary.note);
   return summary;
+}
+
+async function announceAward(shift) {
+  let summary;
+  try {
+    summary = await sms.notifyAwarded(shift);
+  } catch (err) {
+    console.error("SMS award failed", err && err.message);
+    summary = {
+      configured: sms.twilioConfigured(),
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      note: "Texts were not sent (unexpected error). The award was saved.",
+      failures: [],
+    };
+  }
+  try {
+    db.recordSmsSummary(shift.id, summary, "awardSms");
+  } catch (err) {
+    console.error("SMS award summary save failed", err && err.message);
+  }
+  console.log("SMS award shift " + shift.id + ": " + summary.note);
+  return summary;
+}
+
+async function flushResendTexts(reqOrBase) {
+  const base = typeof reqOrBase === "string" ? reqOrBase : (reqOrBase ? baseUrl(reqOrBase) : fallbackBase());
+  const pending = db.takePendingResends();
+  for (const shift of pending) {
+    let summary;
+    try {
+      summary = await sms.notifyStillOpen(shift, base);
+    } catch (err) {
+      console.error("SMS resend failed", err && err.message);
+      summary = {
+        configured: sms.twilioConfigured(),
+        sent: 0,
+        failed: 0,
+        skipped: 0,
+        note: "Texts were not sent (unexpected error). The shift is still open.",
+        failures: [],
+      };
+    }
+    try {
+      db.recordSmsSummary(shift.id, summary, "resendSms");
+    } catch (err) {
+      console.error("SMS resend summary save failed", err && err.message);
+    }
+    console.log("SMS resend shift " + shift.id + ": " + summary.note);
+  }
+  return pending.length;
+}
+
+async function prepareShift(shiftId, req) {
+  if (shiftId) db.rollInterestWindow(shiftId);
+  await flushResendTexts(req);
 }
 
 function wantsJson(req) {
@@ -171,12 +234,14 @@ const server = http.createServer(async (req, res) => {
     // Officer public routes (no roster rankings)
     let m = p.match(/^\/s\/([^/]+)$/);
     if (req.method === "GET" && m) {
+      await prepareShift(m[1], req);
       const html = views.officerPage(m[1]);
       if (!html) return send(res, 404, views.layout("Not found", "<p>Shift not found</p>"));
       return send(res, 200, html);
     }
     m = p.match(/^\/s\/([^/]+)\/interest$/);
     if (req.method === "POST" && m) {
+      await prepareShift(m[1], req);
       const body = await readBody(req);
       const r = db.addInterest(m[1], body.badge);
       if (r.error) {
@@ -187,12 +252,14 @@ const server = http.createServer(async (req, res) => {
     }
     m = p.match(/^\/api\/shifts\/([^/]+)\/interest$/);
     if (req.method === "POST" && m) {
+      await prepareShift(m[1], req);
       const r = db.addInterest(m[1], (await readBody(req)).badge);
       if (r.error) return send(res, r.status || 400, { error: r.error });
       return send(res, 201, r.interest);
     }
     m = p.match(/^\/s\/([^/]+)\/withdraw$/);
     if (req.method === "POST" && m) {
+      await prepareShift(m[1], req);
       const body = await readBody(req);
       const r = db.removeInterest(m[1], body.badge);
       if (r.error) {
@@ -204,6 +271,7 @@ const server = http.createServer(async (req, res) => {
     }
     m = p.match(/^\/api\/shifts\/([^/]+)\/withdraw$/);
     if (req.method === "POST" && m) {
+      await prepareShift(m[1], req);
       const r = db.removeInterest(m[1], (await readBody(req)).badge);
       if (r.error) return send(res, r.status || 400, { error: r.error });
       return send(res, 200, { interest: r.interest });
@@ -237,6 +305,7 @@ const server = http.createServer(async (req, res) => {
 
     m = p.match(/^\/admin\/shift\/([^/]+)$/);
     if (req.method === "GET" && m) {
+      await prepareShift(m[1], req);
       const html = views.adminShiftPage(m[1], baseUrl(req));
       if (!html) return send(res, 404, views.layout("Not found", "<p>Shift not found</p>"));
       return send(res, 200, html);
@@ -253,6 +322,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && m) {
       const r = db.confirmAward(m[1]);
       if (r.error) return send(res, r.status || 400, views.layout("Error", "<p>" + views.esc(r.error) + "</p>", "/admin/shift/" + m[1]));
+      await announceAward(r.shift);
       res.writeHead(303, { Location: "/admin/shift/" + m[1] });
       return res.end();
     }
@@ -289,7 +359,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && m) {
       const r = db.confirmAward(m[1]);
       if (r.error) return send(res, r.status || 400, { error: r.error });
-      return send(res, 200, r);
+      const awardSms = await announceAward(r.shift);
+      return send(res, 200, Object.assign({}, r, { awardSms }));
     }
 
     m = p.match(/^\/api\/shifts\/([^/]+)\/cancel$/);
@@ -305,6 +376,7 @@ const server = http.createServer(async (req, res) => {
 
     m = p.match(/^\/api\/shifts\/([^/]+)$/);
     if (req.method === "GET" && m) {
+      await prepareShift(m[1], req);
       const info = db.suggestWinner(m[1]);
       if (info.error) return send(res, info.status || 404, { error: info.error });
       return send(res, 200, info);
@@ -338,6 +410,11 @@ const server = http.createServer(async (req, res) => {
 
 if (require.main === module) {
   db.getRoster();
+  const sweep = setInterval(() => {
+    db.rollExpiredShifts();
+    flushResendTexts(fallbackBase()).catch((err) => console.error("resend sweep", err && err.message));
+  }, 30000);
+  if (sweep.unref) sweep.unref();
   server.listen(PORT, "0.0.0.0", () => console.log("TFPD Off Duty on http://0.0.0.0:" + PORT));
 }
 

@@ -82,6 +82,9 @@ function createShift({ title, location, whenText, notes, windowMinutes }) {
     awardedAt: null,
     awardId: null,
     cancelledAt: null,
+    resendCount: 0,
+    resendPending: false,
+    lastResendAt: null,
   };
   data.shifts.push(shift);
   write(data);
@@ -100,16 +103,96 @@ function getInterests(shiftId) {
   return read().interests.filter((i) => i.shiftId === String(shiftId));
 }
 
-function addInterest(shiftId, badge) {
+function unfilledResendMax() {
+  const raw = process.env.SMS_UNFILLED_RESEND_MAX;
+  if (raw == null || String(raw).trim() === "") return 1;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 1;
+  return Math.min(24, Math.floor(n));
+}
+
+function resendWindowMinutes(shift) {
+  const raw = process.env.SMS_UNFILLED_RESEND_MINUTES;
+  const fallback = Number(shift.windowMinutes) > 0 ? Number(shift.windowMinutes) : 20;
+  if (raw == null || String(raw).trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(24 * 60, n);
+}
+
+// When an open window has elapsed: close if anyone is interested (ready to award)
+// or the resend cap is hit. Otherwise start another interest window and flag SMS.
+function rollInterestWindow(shiftId, now) {
+  now = now || Date.now();
   const data = read();
   const shift = data.shifts.find((s) => s.id === String(shiftId));
   if (!shift) return { error: "Shift not found", status: 404 };
-  if (shift.status !== "open") return { error: "Interest window is closed", status: 400 };
-  if (Date.now() > shift.closesAt) {
+  if (shift.status !== "open") return { action: "none", shift: getShift(shiftId) };
+  if (now <= shift.closesAt) return { action: "open", shift: getShift(shiftId) };
+
+  const interested = data.interests.some((i) => i.shiftId === String(shiftId));
+  if (interested) {
     shift.status = "closed";
+    shift.closesAt = Math.min(shift.closesAt, now);
+    shift.resendPending = false;
     write(data);
-    return { error: "Interest window has ended", status: 400 };
+    return { action: "closed", reason: "interested", shift: getShift(shiftId) };
   }
+
+  const count = Number(shift.resendCount) || 0;
+  if (count >= unfilledResendMax()) {
+    shift.status = "closed";
+    shift.closesAt = Math.min(shift.closesAt, now);
+    shift.resendPending = false;
+    write(data);
+    return { action: "closed", reason: "cap", shift: getShift(shiftId) };
+  }
+
+  const mins = resendWindowMinutes(shift);
+  shift.resendCount = count + 1;
+  shift.lastResendAt = now;
+  shift.closesAt = now + mins * 60 * 1000;
+  shift.resendWindowMinutes = mins;
+  shift.resendPending = true;
+  shift.status = "open";
+  write(data);
+  return { action: "resend", shift: getShift(shiftId) };
+}
+
+function rollExpiredShifts(now) {
+  now = now || Date.now();
+  const data = read();
+  const ids = data.shifts
+    .filter((s) => s.status === "open" && now > s.closesAt)
+    .map((s) => s.id);
+  return ids.map((id) => rollInterestWindow(id, now));
+}
+
+function takePendingResends() {
+  const data = read();
+  const pending = [];
+  data.shifts.forEach((s) => {
+    if (!s.resendPending) return;
+    s.resendPending = false;
+    pending.push({
+      id: s.id,
+      title: s.title,
+      whenText: s.whenText,
+      location: s.location,
+      resendCount: s.resendCount,
+    });
+  });
+  if (pending.length) write(data);
+  return pending;
+}
+
+function addInterest(shiftId, badge) {
+  const rolled = rollInterestWindow(shiftId);
+  if (rolled.error) return rolled;
+  const data = read();
+  const shift = data.shifts.find((s) => s.id === String(shiftId));
+  if (!shift) return { error: "Shift not found", status: 404 };
+  if (shift.status !== "open") return { error: "Interest window has ended", status: 400 };
   const officer = data.roster.find((o) => o.badge === String(badge));
   if (!officer) return { error: "Unknown badge", status: 400 };
   const already = data.interests.find(
@@ -128,16 +211,13 @@ function addInterest(shiftId, badge) {
 }
 
 function removeInterest(shiftId, badge) {
+  const rolled = rollInterestWindow(shiftId);
+  if (rolled.error) return rolled;
   const data = read();
   const shift = data.shifts.find((s) => s.id === String(shiftId));
   if (!shift) return { error: "Shift not found", status: 404 };
   const tooLate = "Too late — the interest window is closed, so interest can no longer be withdrawn.";
   if (shift.status !== "open") return { error: tooLate, status: 400 };
-  if (Date.now() > shift.closesAt) {
-    shift.status = "closed";
-    write(data);
-    return { error: tooLate, status: 400 };
-  }
   if (badge == null || String(badge).trim() === "") return { error: "Badge required", status: 400 };
   const officer = data.roster.find((o) => o.badge === String(badge));
   if (!officer) return { error: "Unknown badge", status: 400 };
@@ -171,13 +251,14 @@ function setOfficerPhone(badge, phone) {
   return { officer: { badge: officer.badge, name: officer.name, phone: officer.phone } };
 }
 
-function recordSmsSummary(shiftId, summary) {
+function recordSmsSummary(shiftId, summary, field) {
   const data = read();
   const shift = data.shifts.find((s) => s.id === String(shiftId));
   if (!shift) return { error: "Shift not found", status: 404 };
+  const key = field === "awardSms" || field === "resendSms" ? field : "sms";
   summary = summary || {};
   const failures = Array.isArray(summary.failures) ? summary.failures : [];
-  shift.sms = {
+  shift[key] = {
     configured: !!summary.configured,
     sent: Number(summary.sent) || 0,
     failed: Number(summary.failed) || 0,
@@ -190,7 +271,7 @@ function recordSmsSummary(shiftId, summary) {
     })),
   };
   write(data);
-  return { sms: shift.sms };
+  return { sms: shift[key] };
 }
 
 function closeShift(shiftId) {
@@ -201,6 +282,7 @@ function closeShift(shiftId) {
   if (shift.status === "cancelled") return { error: "Award was cancelled", status: 400 };
   shift.status = "closed";
   shift.closesAt = Math.min(shift.closesAt, Date.now());
+  shift.resendPending = false;
   write(data);
   return { shift, suggestion: computeWinner(data, shiftId) };
 }
@@ -215,13 +297,8 @@ function computeWinner(data, shiftId) {
 }
 
 function suggestWinner(shiftId) {
-  const data = read();
-  const shift = data.shifts.find((s) => s.id === String(shiftId));
-  if (!shift) return { error: "Shift not found", status: 404 };
-  if (shift.status === "open" && Date.now() > shift.closesAt) {
-    shift.status = "closed";
-    write(data);
-  }
+  const rolled = rollInterestWindow(shiftId);
+  if (rolled.error) return rolled;
   return {
     shift: getShift(shiftId),
     interests: getInterests(shiftId),
@@ -239,6 +316,7 @@ function confirmAward(shiftId) {
     shift.status = "closed";
     shift.closesAt = Math.min(shift.closesAt, Date.now());
   }
+  shift.resendPending = false;
   const winner = computeWinner(data, shiftId);
   if (!winner) return { error: "No interested officers", status: 400 };
 
@@ -434,6 +512,10 @@ module.exports = {
   getInterests,
   addInterest,
   removeInterest,
+  rollInterestWindow,
+  rollExpiredShifts,
+  takePendingResends,
+  unfilledResendMax,
   setOfficerPhone,
   recordSmsSummary,
   closeShift,
